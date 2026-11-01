@@ -23,79 +23,51 @@
 
 ## 功能
 
-- **播放器**（默认按 `M` 打开）：每日推荐、排行榜、我的歌单、搜索；列表 / 封面墙两种视图；歌单内筛选、一键定位到正在播放；平滑滚动和切换动画
+- **播放器**（默认按 `.` 打开）：每日推荐、我的歌单、搜索；列表 / 封面墙两种视图；歌单内筛选、一键定位到正在播放；平滑滚动和切换动画
 - **歌词**：网易云逐字歌词（yrc）
   - 3D 歌词漂浮在世界里，跟着演唱一句句出现，暂停时自动隐藏
   - Deep Glow 发光、Wiggle 抖动、文闪、Word pop
   - 自动拆开"两句写在一行"的歌词
-- **Song card**：iOS 风格的歌曲卡片，打开聊天栏可以拖动位置
-- **灵动岛**：屏幕顶部显示正在播放，切歌时展开
-- **一起听歌**：开房间、分享房间码，所有人自动同步到同一首歌、同一秒（公共中继，开箱即用）
-- **设置**：都在播放器侧栏的 ⚙ 里；可以绑定快捷键（播放 / 暂停、上一首、下一首、音量、开关歌词）
+- **歌曲卡片**：iOS 风格的歌曲卡片，打开聊天栏可以拖动位置，在聊天栏点进度条可直接调节至点击进度位置
+- **灵动岛**：屏幕顶部显示正在播放，切歌或显示灵动岛歌词时展开。
+- **音乐语音大厅**：开房间、分享房间码，所有人自动同步到同一首歌、同一秒，可语音游玩游戏延迟略高（公共中继，开箱即用）
+- **设置**：都在播放器侧栏的 ⚙ 里；可以绑定快捷键（播放 / 暂停、上一首、下一首、音量、开关歌词显示方式[灵动岛显示，3D歌词显示，2D歌词栏显示]）
+- **设置**:  信息胶囊可显示玩家状态信息
+- **设置**   敌人状态可显示液态玻璃样式的敌人状态显示（持续优化ing）
+- **设置**   hypixel的床警报（现有bug维修ing）玩家数据显示
+- **设置**   目前以内置一系列pvp组件（自动疾跑，特效，粒子数量改变，自由视角，平滑放大，自定义迷雾，火焰遮盖，自动GG，快捷发言，方块高亮[有向下皮肤变暗的bug，修复ing]，聊天增强，cps显示[无法分割的bug，修复ing]，护甲显示[视觉bug，修复ing]）
 - 网易云扫码登录（VIP 歌曲需要会员账号）
 
 ## 安装
 
-按游戏版本选 jar（在 [Releases](https://github.com/Sorihiko/DangoMusic/releases) 下载）：
+按游戏版本选 jar（在 [Releases](https://github.com/mimistb/Music PVP/releases) 下载）：
 
 | 版本 | 文件 | 需要 |
 |---|---|---|
-| 1.8.9 | `DangoMusic-x.x.x+1.8.9.jar` | Forge 1.8.9（11.15.1.2318），或支持 Forge mod 的客户端（如 Lunar） |
-| 1.20.1 Fabric | `DangoMusic-x.x.x+1.20.1-fabric.jar` | Fabric Loader + [Fabric API](https://modrinth.com/mod/fabric-api) |
-| 1.20.1 Forge | `DangoMusic-x.x.x+1.20.1-forge.jar` | Forge 47.x |
-| 1.21.1 Fabric | `DangoMusic-x.x.x+1.21.1-fabric.jar` | Fabric Loader + [Fabric API](https://modrinth.com/mod/fabric-api) |
-| 1.21.1 NeoForge | `DangoMusic-x.x.x+1.21.1-neoforge.jar` | NeoForge 21.1.x |
-| 1.21.11 Fabric | `DangoMusic-x.x.x+1.21.11-fabric.jar` | Fabric Loader + [Fabric API](https://modrinth.com/mod/fabric-api) |
-| 1.21.11 NeoForge | `DangoMusic-x.x.x+1.21.11-neoforge.jar` | NeoForge 21.11.x |
-| 26.2 Fabric | `DangoMusic-x.x.x+26.2-fabric.jar` | Fabric Loader + [Fabric API](https://modrinth.com/mod/fabric-api) |
-| 26.2 NeoForge | `DangoMusic-x.x.x+26.2-neoforge.jar` | NeoForge 26.2.x |
-| 26.3 Fabric | `DangoMusic-x.x.x+26.3-fabric.jar` | Fabric Loader + [Fabric API](https://modrinth.com/mod/fabric-api) |
-| 26.3 NeoForge | `DangoMusic-x.x.x+26.3-neoforge.jar` | NeoForge 26.3.x |
+| 1.8.9 | `Music PVP x.x.x.jar` | Forge 1.8.9（11.15.1.2318），或支持 Forge mod 的客户端（如 Lunar） |
 
-1. 把对应的 jar 放进 `.minecraft/mods`（Fabric 版还要放 Fabric API）
-2. 进游戏按 `M`，点左下角扫码登录网易云
+1. 把对应的 jar 放进 `.minecraft/mods`
+2. 进游戏按 `.`，点左下角扫码登录网易云
 
-配置、登录凭证、缓存都存在 `.minecraft/config/dangomusic/`，各个版本通用。
-
-26.x 的歌词和播放器界面只支持 OpenGL：视频设置里把图形 API 选成 Vulkan 时只能放音乐，进游戏会在聊天栏提示。
+配置、登录凭证、缓存都存在 `.minecraft/config/Music PVP/`，各个版本通用。
 
 ## 构建
 
-需要 JDK 8（1.8.9）、JDK 21（1.20.1～1.21.11）和 JDK 25（26.x）。`build-all.bat` 默认用 `C:\Program Files\Java\jdk-21`
-和 `C:\Program Files\Eclipse Adoptium\jdk-25.0.4.101-hotspot`，装在别处的话先设置环境变量 `DANGO_JDK21` / `DANGO_JDK25`。
-
-```bash
-build-all.bat                  # 构建所有版本，jar 都收集到 dist/
-```
+需要 JDK 8（1.8.9）。
 
 只构建 1.8.9：
 
 ```bash
 cd legacy
-gradlew build                  # 输出 legacy/build/libs/DangoMusic-x.x.x+1.8.9.jar
+gradlew build                  # 输出 legacy/build/libs/Music PVP x.x.x.jar
 gradlew runClient              # 开发环境里直接运行
 ```
 
 ### 项目结构
 
 ```
-version.properties   版本号（所有 Minecraft 版本共用）
-common/core          核心：模块、设置、网易云接口、播放器、一起听歌（不依赖 Minecraft）
-common/ui            界面：播放器窗口、歌词、Song card、灵动岛（只通过 Gfx / Platform 接口画）
-legacy/              Forge 1.8.9 平台层：实现 Gfx / Platform，OpenGL 2 着色器、字体
-modern/              1.20.1～1.21.11 的平台层（一个 Gradle 项目，每个版本 + 加载器一个子项目）
-  src/main/            所有高版本共用：OpenGL 3.2 core 着色器、字体、按键、播放器界面
-  src/mc<版本>/        某个 Minecraft 版本专用的几处写法
-  versions/<版本-加载器>/  Fabric / Forge / NeoForge 入口和 mod 信息文件
-modern26/            26.x 的构建（Minecraft 不再混淆，换了一套构建插件和 JDK 25）
-                     代码和 modern/ 共用（modern/src/main + modern/src/mc26.x），这里只有构建配置和入口
-  versions/<版本-加载器>/  Fabric / NeoForge 入口、mixin 和 mod 信息文件
-```
 
-`common` 不单独构建，由各平台层用 `includeBuild("../common")` 引进去，打进同一个 jar。
-`common` 的依赖里没有 Minecraft，所以写错了地方（在共用代码里用了游戏的类）会直接编译不过。
-
-### 一起听歌（公共中继）
+### 音乐语音大厅（公共中继）
 
 一起听歌不需要账号，也不需要配置任何 Key：模组会连公共 MQTT 服务器
 （`broker.emqx.io`，连不上时自动换 `broker.hivemq.com`），房主创建房间后得到一个 5 位房间码，
