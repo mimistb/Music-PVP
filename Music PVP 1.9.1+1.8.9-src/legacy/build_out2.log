@@ -1,0 +1,80 @@
+﻿To honour the JVM settings for this build a single-use Daemon process will be forked. See https://docs.gradle.org/7.0.2/userguide/gradle_daemon.html#sec:disabling_the_daemon.
+Daemon will be stopped at the end of the build 
+
+> Configure project :
+#################################################
+         ForgeGradle 2.3-1.0.8-9eec2d49        
+   https://github.com/anatawa12/ForgeGradle-2.3  
+#################################################
+                 Powered by MCP                  
+             http://modcoderpack.com             
+     by: Searge, ProfMobius, R4wk, ZeuX          
+     Fesh0r, IngisKahn, bspkrs, LexManos         
+#################################################
+
+> Task :common:core:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :deobfCompileDummyTask UP-TO-DATE
+> Task :deobfProvidedDummyTask UP-TO-DATE
+> Task :compileApiKotlin NO-SOURCE
+> Task :getVersionJson
+> Task :extractUserdev UP-TO-DATE
+> Task :common:core:compileKotlin UP-TO-DATE
+> Task :common:core:compileJava UP-TO-DATE
+> Task :common:ui:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :downloadClient SKIPPED
+> Task :common:core:processResources NO-SOURCE
+> Task :common:core:classes UP-TO-DATE
+> Task :common:core:jar UP-TO-DATE
+> Task :common:ui:processResources UP-TO-DATE
+> Task :downloadServer SKIPPED
+> Task :splitServerJar SKIPPED
+> Task :mergeJars SKIPPED
+> Task :common:ui:compileKotlin
+> Task :applyBinaryPatches
+> Task :common:ui:compileJava NO-SOURCE
+> Task :common:ui:classes UP-TO-DATE
+> Task :common:ui:jar
+> Task :extractDependencyATs SKIPPED
+> Task :extractMcpData SKIPPED
+> Task :extractMcpMappings SKIPPED
+> Task :genSrgs SKIPPED
+> Task :deobfMcMCP SKIPPED
+> Task :sourceApiJava UP-TO-DATE
+> Task :compileApiJava NO-SOURCE
+> Task :processApiResources NO-SOURCE
+> Task :apiClasses UP-TO-DATE
+> Task :sourceMainJava UP-TO-DATE
+> Task :processResources UP-TO-DATE
+> Task :sourceTestJava UP-TO-DATE
+> Task :processTestResources NO-SOURCE
+> Task :compileKotlin
+
+> Task :compileJava
+.\gradlew.bat : ע: C:\Users\xzy18\Desktop\TraeCode CN\DangoMusic-main\legacy\build\sources\main\java\me\sorihiko\dango\
+forge\DangoMusicMod.javaʹ�û򸲸����ѹ�ʱ�� API��
+At line:15 char:1328
++ ... 6-hotspot'; .\gradlew.bat --no-daemon --console=plain build *> build_ ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (ע: C:\Users\xzy...����ѹ�ʱ�� API��:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+ע: �й���ϸ��Ϣ, ��ʹ�� -Xlint:deprecation ���±��롣
+
+> Task :classes
+> Task :jar
+> Task :compileTestKotlin NO-SOURCE
+> Task :compileTestJava NO-SOURCE
+> Task :testClasses UP-TO-DATE
+> Task :test NO-SOURCE
+> Task :reobfJar SKIPPED
+> Task :extractAnnotationsJar
+> Task :shadowJar
+> Task :reobfShadowJar
+> Task :assemble
+> Task :check UP-TO-DATE
+> Task :extractAnnotationsShadowJar
+> Task :build
+
+BUILD SUCCESSFUL in 3m 38s
+16 actionable tasks: 9 executed, 7 up-to-date

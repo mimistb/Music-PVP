@@ -1,0 +1,21 @@
+﻿To honour the JVM settings for this build a single-use Daemon process will be forked. See https://docs.gradle.org/7.0.2/userguide/gradle_daemon.html#sec:disabling_the_daemon.
+Daemon will be stopped at the end of the build 
+
+> Configure project :
+#################################################
+         ForgeGradle 2.3-1.0.8-9eec2d49        
+   https://github.com/anatawa12/ForgeGradle-2.3  
+#################################################
+                 Powered by MCP                  
+             http://modcoderpack.com             
+     by: Searge, ProfMobius, R4wk, ZeuX          
+     Fesh0r, IngisKahn, bspkrs, LexManos         
+#################################################
+
+> Task :common:core:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :common:ui:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :common:core:compileKotlin
+> Task :common:core:compileJava UP-TO-DATE
+> Task :common:ui:compileKotlin
+
+BUILD SUCCESSFUL in 4m 35s
