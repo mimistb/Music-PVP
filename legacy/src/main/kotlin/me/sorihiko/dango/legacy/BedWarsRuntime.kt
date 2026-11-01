@@ -4,6 +4,7 @@ import bedwars.BedAlertModule
 import bedwars.BedMarker
 import bedwars.MatchInput
 import bedwars.MatchTracker
+import bedwars.OwnBedTracker
 import bedwars.PlayerIdentity
 import bedwars.Team
 import bedwars.ThreatEntity
@@ -55,8 +56,30 @@ object BedWarsRuntime {
     private var lastWorld: World? = null
     private var lastDimension = Int.MIN_VALUE
     private var hadOwnBed = false
+    /** 上一 tick 的对局状态，用于给会话统计模块提供开始/结束跳变。 */
+    private var adninMatchActive = false
 
     private var nextScanAt = 0L
+
+    // 床扫描的时间切片状态（每次扫描分摊到多个 tick，避免周期性卡顿）
+    private val scanPos = BlockPos.MutableBlockPos()
+    private val probePos = BlockPos.MutableBlockPos()
+    private val scanSeen = HashSet<Long>()
+    private val woolVotes = IntArray(8)
+    private val nbDirX = intArrayOf(1, -1, 0, 0)
+    private val nbDirZ = intArrayOf(0, 0, 1, -1)
+    private var scanActive = false
+    private var scanX0 = 0
+    private var scanX1 = 0
+    private var scanY0 = 0
+    private var scanY1 = 0
+    private var scanZ0 = 0
+    private var scanZ1 = 0
+    private var scanNx = 0L
+    private var scanNy = 0L
+    private var scanColumns = 0L
+    private var scanTotal = 0L
+    private var scanCursor = 0L
     /** 上一次同步给 BedAlertModule 的通用模式，避免每 tick 重复写。 */
     private var lastRelaxed = false
     /** 上一次写入 RosterStatsService 的缓存分钟数（-1 = 还没写过）。 */
@@ -142,10 +165,10 @@ object BedWarsRuntime {
         syncSettings()
         handleQuery()
 
-        // 打开任意 GUI 时停止 update（只保留查询请求的处理）
-        if (mc.currentScreen != null) return
-
+        // 注意：不能因为打开了 GUI 就跳过更新——否则威胁接触不再过期、
+        // 自己床状态不再刷新，关闭 GUI 后会出现过期提示残留与集体消失的闪烁。
         val now = System.currentTimeMillis()
+        input.ownBedProbe = probeOwnBed(world)
         scanBeds(world, player.posX, player.posY, player.posZ, now)
         fillInput(world, player, now)
         publishTabNames()
@@ -171,6 +194,8 @@ object BedWarsRuntime {
         enqueued.clear()
         bedCache.clear()
         bedList.clear()
+        scanSeen.clear()
+        scanActive = false
         nextScanAt = 0L
         hadOwnBed = false
         statsMatchActive = false
@@ -322,67 +347,145 @@ object BedWarsRuntime {
 
     // ---------------------------------------------------------------- 床扫描
 
+    /**
+     * 自己床的直接复核：只看上一次锁定的床坐标。
+     * 区块没加载时无法判断（保留锁定），已加载且那里不是床才认定被拆。
+     */
+    private fun probeOwnBed(world: World): Int {
+        val bed = bedAlerts.getOwnBed()
+        if (!bed.known) return OwnBedTracker.PROBE_NONE
+        probePos.set(bed.x, bed.y, bed.z)
+        if (!world.isBlockLoaded(probePos)) return OwnBedTracker.PROBE_UNLOADED
+        val state = world.getBlockState(probePos)
+        return if (Block.getIdFromBlock(state.block) == BLOCK_ID_BED) {
+            OwnBedTracker.PROBE_PRESENT
+        } else {
+            OwnBedTracker.PROBE_ABSENT
+        }
+    }
+
+    /**
+     * 分片扫描：每 tick 只处理 [SCAN_BUDGET_BLOCKS] 个方块，扫完一整轮才回收缓存。
+     * 原来的单 tick 全量扫描（81×81×33 ≈ 216k 次 getBlockState）会造成每 2 秒一次的卡顿。
+     */
     private fun scanBeds(world: World, px: Double, py: Double, pz: Double, now: Long) {
-        if (now < nextScanAt) return
-        nextScanAt = now + SCAN_INTERVAL_MILLIS
-
-        val x0 = Math.floor(px).toInt() - SCAN_RADIUS
-        val x1 = Math.floor(px).toInt() + SCAN_RADIUS
-        val z0 = Math.floor(pz).toInt() - SCAN_RADIUS
-        val z1 = Math.floor(pz).toInt() + SCAN_RADIUS
-        val y0 = (Math.floor(py).toInt() - SCAN_HEIGHT).coerceAtLeast(0)
-        val y1 = (Math.floor(py).toInt() + SCAN_HEIGHT).coerceAtMost(255)
-
-        val seen = HashSet<Long>()
-        val pos = BlockPos.MutableBlockPos()
-        for (x in x0..x1) {
-            for (z in z0..z1) {
-                for (y in y0..y1) {
-                    pos.set(x, y, z)
-                    if (!world.isBlockLoaded(pos)) continue
-                    val state = world.getBlockState(pos)
-                    val block = state.block
-                    if (Block.getIdFromBlock(block) != 26) continue
-                    val meta = block.getMetaFromState(state)
-                    val marker = markerAt(x, y, z, meta) ?: continue
-                    val key = keyOf(marker.x, marker.y, marker.z)
-                    seen.add(key)
-                    bedCache[key] = marker
-                }
-            }
+        if (!scanActive) {
+            if (now < nextScanAt) return
+            beginScan(px, py, pz)
         }
 
-        // 扫描盒内本轮没再见到的床已消失；盒外的保留（区块卸载 / 距离太远，不能当成被拆）
+        var budget = SCAN_BUDGET_BLOCKS
+        while (scanCursor < scanTotal && budget > 0) {
+            val index = scanCursor
+            val y = scanY0 + (index % scanNy).toInt()
+            val x = scanX0 + ((index / scanNy) % scanNx).toInt()
+            val z = scanZ0 + (index / scanColumns).toInt()
+            scanPos.set(x, y, z)
+            if (world.isBlockLoaded(scanPos)) {
+                val state = world.getBlockState(scanPos)
+                val block = state.block
+                if (Block.getIdFromBlock(block) == BLOCK_ID_BED) {
+                    recordMarker(world, BedMarker.fromBlock(x, y, z, block.getMetaFromState(state)))
+                }
+            }
+            scanCursor++
+            budget--
+        }
+
+        if (scanCursor >= scanTotal) finishScan(px, pz, now)
+    }
+
+    private fun beginScan(px: Double, py: Double, pz: Double) {
+        val bx = Math.floor(px).toInt()
+        val by = Math.floor(py).toInt()
+        val bz = Math.floor(pz).toInt()
+        scanX0 = bx - SCAN_RADIUS
+        scanX1 = bx + SCAN_RADIUS
+        scanZ0 = bz - SCAN_RADIUS
+        scanZ1 = bz + SCAN_RADIUS
+        scanY0 = (by - SCAN_HEIGHT).coerceAtLeast(0)
+        scanY1 = (by + SCAN_HEIGHT).coerceAtMost(255)
+        scanNx = (scanX1 - scanX0 + 1).toLong()
+        scanNy = (scanY1 - scanY0 + 1).toLong()
+        scanColumns = scanNx * scanNy
+        scanTotal = scanColumns * (scanZ1 - scanZ0 + 1).toLong()
+        scanCursor = 0L
+        scanSeen.clear()
+        scanActive = true
+    }
+
+    private fun recordMarker(world: World, marker: BedMarker) {
+        val key = keyOf(marker.x, marker.y, marker.z)
+        scanSeen.add(key)
+        val team = teamAroundBed(world, marker.x, marker.y, marker.z, marker.footX, marker.footZ)
+        val previous = bedCache[key]
+        // 队伍羊毛可能被玩家换成黑曜石/木头：本轮推断不出来时沿用上一轮的队伍。
+        bedCache[key] = when {
+            team.known() -> marker.withTeam(team)
+            previous != null && previous.team.known() -> marker.withTeam(previous.team)
+            else -> marker
+        }
+    }
+
+    private fun finishScan(px: Double, pz: Double, now: Long) {
+        scanActive = false
+        nextScanAt = now + SCAN_INTERVAL_MILLIS
+
         val iterator = bedCache.entries.iterator()
         while (iterator.hasNext()) {
             val bed = iterator.next().value
-            val inside = bed.x in x0..x1 && bed.z in z0..z1 && bed.y in y0..y1
-            if (inside && !seen.contains(keyOf(bed.x, bed.y, bed.z))) iterator.remove()
+            val inside = bed.x in scanX0..scanX1 && bed.z in scanZ0..scanZ1 && bed.y in scanY0..scanY1
+            if (inside && !scanSeen.contains(keyOf(bed.x, bed.y, bed.z))) {
+                // 扫描盒内本轮没再见到的床已消失。
+                iterator.remove()
+                continue
+            }
+            val dx = bed.centerX() - px
+            val dz = bed.centerZ() - pz
+            if (dx * dx + dz * dz > CACHE_RETAIN_RADIUS * CACHE_RETAIN_RADIUS) {
+                // 隔得太远的旧床直接丢弃，避免跨图移动时缓存无限增长。
+                iterator.remove()
+            }
         }
 
         bedList.clear()
         bedList.addAll(bedCache.values)
     }
 
-    /** meta bit 0x8 = HEAD；朝向低 2 位：0→footZ-1、1→footX+1、2→footZ+1、3→footX-1。 */
-    private fun markerAt(x: Int, y: Int, z: Int, meta: Int): BedMarker? {
-        val head = (meta and 0x8) != 0
-        val dx = when (meta and 0x3) {
-            1 -> 1
-            3 -> -1
-            else -> 0
+    /**
+     * 床的队伍来自紧邻的羊毛（Bed Wars 每张床都嵌在队伍色羊毛里）。
+     * 两个方块各取 4 个水平邻居、上下再各一层共 3 层，按队伍计票，至少 2 票才采信。
+     */
+    private fun teamAroundBed(world: World, hx: Int, hy: Int, hz: Int, fx: Int, fz: Int): Team {
+        woolVotes.fill(0)
+        var best = Team.UNKNOWN
+        var bestVotes = 0
+        for (cell in 0..1) {
+            val cx = if (cell == 0) hx else fx
+            val cz = if (cell == 0) hz else fz
+            for (dir in 0..3) {
+                val nx = cx + nbDirX[dir]
+                val nz = cz + nbDirZ[dir]
+                for (dy in -1..1) {
+                    val y = hy + dy
+                    if (y < 0 || y > 255) continue
+                    probePos.set(nx, y, nz)
+                    if (!world.isBlockLoaded(probePos)) continue
+                    val state = world.getBlockState(probePos)
+                    if (Block.getIdFromBlock(state.block) != BLOCK_ID_WOOL) continue
+                    val team = Team.fromWoolMetadata(state.block.getMetaFromState(state))
+                    if (!team.known()) continue
+                    val index = team.index()
+                    if (index < 0 || index >= woolVotes.size) continue
+                    woolVotes[index]++
+                    if (woolVotes[index] > bestVotes) {
+                        bestVotes = woolVotes[index]
+                        best = team
+                    }
+                }
+            }
         }
-        val dz = when (meta and 0x3) {
-            0 -> -1
-            2 -> 1
-            else -> 0
-        }
-        return if (head) {
-            BedMarker(x, y, z, x + dx, z + dz, Team.UNKNOWN)
-        } else {
-            // 扫到的是脚部：头部在反方向，脚部就是当前方块
-            BedMarker(x - dx, y, z - dz, x, z, Team.UNKNOWN)
-        }
+        return if (bestVotes >= WOOL_TEAM_MIN_VOTES) best else Team.UNKNOWN
     }
 
     private fun keyOf(x: Int, y: Int, z: Int): Long {
@@ -409,6 +512,11 @@ object BedWarsRuntime {
 
     private fun publish(now: Long) {
         val active = bedAlerts.isMatchActive()
+        // 会话统计只关心跳变：开始记一局，结束做结算（不绘制任何 HUD）
+        if (active != adninMatchActive) {
+            adninMatchActive = active
+            AdninRuntime.onMatchActive(active, now)
+        }
         val ownTeam = bedAlerts.getOwnTeam()
         val ownBed = bedAlerts.getOwnBed()
         val rosterSize = bedAlerts.roster().size
@@ -516,4 +624,12 @@ object BedWarsRuntime {
     private const val SCAN_INTERVAL_MILLIS = 2000L
     private const val SCAN_RADIUS = 40
     private const val SCAN_HEIGHT = 16
+    /** 每 tick 的扫描预算：216k 方块 / 12000 ≈ 18 tick（约 0.9 s 扫完一轮）。 */
+    private const val SCAN_BUDGET_BLOCKS = 12000
+    /** 缓存里超过这个水平距离的旧床直接丢弃。 */
+    private const val CACHE_RETAIN_RADIUS = 128.0
+    private const val BLOCK_ID_BED = 26
+    private const val BLOCK_ID_WOOL = 35
+    /** 床周围至少这么多同色羊毛才认定队伍。 */
+    private const val WOOL_TEAM_MIN_VOTES = 2
 }

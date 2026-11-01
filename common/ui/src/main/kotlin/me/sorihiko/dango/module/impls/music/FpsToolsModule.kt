@@ -231,6 +231,87 @@ class FpsToolsModule : Module() {
     @ModuleValue("复制最小长度", "少于该字符数不追加 [C]，0 ~ 32")
     val chatMinLength = IntValue(0, 32, 3)
 
+    @ModuleValue("聊天透明度", "0 ~ 100%，作用于聊天背景与文字")
+    val chatOpacity = IntValue(0, 100, 100)
+
+    // ---------------------------------------------------------------- 第四批：反作弊
+
+    @ModuleValue("反作弊", "信号聚合 · 确认 · 标签")
+    val acEnabled = BooleanValue(true)
+
+    @ModuleValue("提示音", "确认作弊时播放提示音")
+    val acSound = BooleanValue(true)
+
+    @ModuleValue("自动格挡检查", "启用 Autoblock 检查项")
+    val acAutoBlock = BooleanValue(true)
+
+    @ModuleValue("合法搭桥检查", "启用 Legit Scaffold 检查项")
+    val acLegitScaffold = BooleanValue(true)
+
+    @ModuleValue("搭桥 A 检查", "启用 Scaffold A 检查项")
+    val acScaffoldA = BooleanValue(true)
+
+    @ModuleValue("搭桥 B 检查", "启用 Scaffold B 检查项")
+    val acScaffoldB = BooleanValue(true)
+
+    @ModuleValue("无减速检查", "启用 No Slow 检查项")
+    val acNoSlow = BooleanValue(true)
+
+    @ModuleValue("确认条数", "窗口内累计多少条信号算确认，1 ~ 10")
+    val acConfirmCount = IntValue(1, 10, 3)
+
+    @ModuleValue("统计窗口", "秒，1 ~ 60")
+    val acWindowSeconds = IntValue(1, 60, 10)
+
+    @ModuleValue("置信度门槛", "单条信号达到即确认，0 ~ 1")
+    val acMinConfidence = FloatValue(0f, 1f, 0.6f, 2)
+
+    @ModuleValue("合法搭桥倍率", "低置信度项门槛放大倍数，1 ~ 5")
+    val acLegitMultiplier = IntValue(1, 5, 2)
+
+    // ---------------------------------------------------------------- 第四批：聊天数据
+
+    @ModuleValue("聊天数据", "解析 · 历史 · 队伍过滤")
+    val adChatEnabled = BooleanValue(true)
+
+    @ModuleValue("忽略队友", "队友发言不进聊天历史")
+    val adChatIgnoreTeammates = BooleanValue(true)
+
+    @ModuleValue("紧凑黑名单", "黑名单玩家只输出紧凑行")
+    val adChatCompactBlacklist = BooleanValue(true)
+
+    @ModuleValue("最低星级", "低于该星级不输出统计，0 = 不过滤")
+    val adChatMinStars = IntValue(0, 500, 0)
+
+    @ModuleValue("最低 FKDR", "低于该值不输出床战统计，0 = 不过滤")
+    val adChatMinFkdr = FloatValue(0f, 10f, 0f, 2)
+
+    @ModuleValue("最低 SW KDR", "低于该值不输出空战统计，0 = 不过滤")
+    val adChatMinSwKdr = FloatValue(0f, 10f, 0f, 2)
+
+    @ModuleValue("历史容量", "保留最近多少条，10 ~ 1000")
+    val adChatHistory = IntValue(10, 1000, 200)
+
+    @ModuleValue("单条长度上限", "超出截断，8 ~ 512")
+    val adChatMaxLength = IntValue(8, 512, 256)
+
+    // ---------------------------------------------------------------- 第四批：本次游戏
+
+    @ModuleValue("会话统计", "局数 · 连胜 · 平均时长")
+    val adSessionEnabled = BooleanValue(true)
+
+    @ModuleValue("掉线保持", "秒，0 = 不自动清空，0 ~ 600")
+    val adSessionIdleSeconds = IntValue(0, 600, 120)
+
+    @ModuleValue("失败保留连胜", "失败时不重置连胜")
+    val adSessionKeepWinstreak = BooleanValue(false)
+
+    @ModuleValue("最长会话", "分钟，0 = 不限制，0 ~ 180")
+    val adSessionMaxMinutes = IntValue(0, 180, 0)
+
+    @ModuleValue("平均时长取整", "秒，1 ~ 60")
+    val adSessionAvgRoundSeconds = IntValue(1, 60, 1)
+
     // ---------------------------------------------------------------- 信息胶囊：护甲 · 点击速度
 
     @ModuleValue("护甲显示", "在信息胶囊区域单独一块显示头盔到靴子的耐久")
@@ -305,6 +386,193 @@ class FpsToolsModule : Module() {
 
     @ModuleValue("玻璃质量", "0 高 / 1 中 / 2 低")
     val perfGlassQuality = IntValue(0, 2, 1)
+
+    // ---------------------------------------------------------------- 第三批：性能优化 55 项
+
+    // 渲染 / 实体
+    @ModuleValue("名字标签剔除", "不画盔甲架的名字标签（架子照常画）")
+    val perfIgnoreStands = BooleanValue(false)
+
+    @ModuleValue("资源加载快速路径", "资源包加载时跳过冗余校验")
+    val perfFastLoad = BooleanValue(true)
+
+    @ModuleValue("方块模型批渲染", "同材质模型合并提交")
+    val perfBatchModel = BooleanValue(true)
+
+    @ModuleValue("降低环境粒子取样", "环境粒子取样数 1000 → 100")
+    val perfLowAnimTick = BooleanValue(false)
+
+    @ModuleValue("粒子固定最高亮度", "粒子按最高亮度绘制")
+    val perfStaticParticle = BooleanValue(false)
+
+    @ModuleValue("限制区块重建频率", "配合下面的重建预算使用")
+    val perfLimitChunks = BooleanValue(true)
+
+    @ModuleValue("资源包图标降采样", "资源包列表的图标降采样显示")
+    val perfDownscaleIcons = BooleanValue(true)
+
+    @ModuleValue("粒子视锥剔除", "视野外的粒子不再提交")
+    val perfParticleCulling = BooleanValue(true)
+
+    @ModuleValue("缓存天空颜色", "天空颜色每帧只算一次")
+    val perfCacheSky = BooleanValue(true)
+
+    @ModuleValue("实体遮挡剔除", "被方块遮挡的实体不再渲染")
+    val perfEntityCulling = BooleanValue(true)
+
+    @ModuleValue("剔除包含玩家", "遮挡剔除时把玩家也纳入")
+    val perfCullPlayers = BooleanValue(false)
+
+    @ModuleValue("缓存护甲纹理", "护甲渲染复用纹理路径")
+    val perfCacheArmorTex = BooleanValue(true)
+
+    @ModuleValue("远处告示牌文字剔除", "远处的告示牌不画文字")
+    val perfSignCulling = BooleanValue(true)
+
+    @ModuleValue("方块实体距离剔除", "超出距离的方块实体不渲染")
+    val perfBlockEntityCulling = BooleanValue(false)
+
+    @ModuleValue("方块实体剔除距离", "8 ~ 64 格")
+    val perfBlockEntityDistance = IntValue(8, 64, 32)
+
+    @ModuleValue("HUD 用自定义字体", "HUD 文字改用本项目字体")
+    val perfCustomHudFont = BooleanValue(false)
+
+    @ModuleValue("HUD 字号", "12 ~ 28")
+    val perfCustomHudFontSize = IntValue(12, 28, 16)
+
+    @ModuleValue("直写后备缓冲", "跳过 framebuffer（可能与光影冲突）")
+    val perfFastRender = BooleanValue(false)
+
+    // 内容隐藏（改动后自动重建世界）
+    @ModuleValue("隐藏草", "不渲染矮草")
+    val perfHideGrass = BooleanValue(false)
+
+    @ModuleValue("隐藏双高草", "不渲染双格高草")
+    val perfHideDoubleGrass = BooleanValue(false)
+
+    @ModuleValue("隐藏花", "不渲染单格花")
+    val perfHideFlowers = BooleanValue(false)
+
+    @ModuleValue("隐藏双格花", "不渲染双格高花")
+    val perfHideDoubleFlowers = BooleanValue(false)
+
+    @ModuleValue("隐藏栅栏", "不渲染栅栏方块")
+    val perfHideFences = BooleanValue(false)
+
+    @ModuleValue("隐藏栅栏门", "不渲染栅栏门")
+    val perfHideFenceGates = BooleanValue(false)
+
+    @ModuleValue("隐藏头颅", "不渲染头颅方块实体")
+    val perfHideSkulls = BooleanValue(false)
+
+    @ModuleValue("隐藏盔甲架", "不渲染盔甲架模型")
+    val perfHideArmorStands = BooleanValue(false)
+
+    @ModuleValue("隐藏物品展示框", "不渲染展示框")
+    val perfHideItemFrames = BooleanValue(false)
+
+    @ModuleValue("隐藏框内地图", "展示框里的地图不画")
+    val perfHideMapFrames = BooleanValue(false)
+
+    @ModuleValue("隐藏身上插的箭", "不渲染插在自己身上的箭")
+    val perfHideStuckArrows = BooleanValue(false)
+
+    @ModuleValue("隐藏落地的箭", "不渲染地上的箭")
+    val perfHideGroundArrows = BooleanValue(false)
+
+    @ModuleValue("隐藏岩浆粒子", "不生成岩浆粒子")
+    val perfHideLavaParticles = BooleanValue(false)
+
+    @ModuleValue("隐藏刷怪笼粒子", "不生成刷怪笼粒子")
+    val perfHideSpawnerParticles = BooleanValue(false)
+
+    @ModuleValue("隐藏刷怪笼里的生物", "刷怪笼里的生物不渲染")
+    val perfHideMobInSpawner = BooleanValue(false)
+
+    @ModuleValue("隐藏传送门粒子", "不生成传送门粒子")
+    val perfHidePortalParticles = BooleanValue(false)
+
+    // 数值 / 模式
+    @ModuleValue("粒子数量上限", "0 ~ 2000")
+    val perfParticlesLimit = IntValue(0, 2000, 400)
+
+    @ModuleValue("区块重建预算", "每帧最多重建的区块数，1 ~ 250")
+    val perfChunkUpdateLimit = IntValue(1, 250, 50)
+
+    @ModuleValue("遮挡剔除间隔", "毫秒，10 ~ 500（按 5 吸附）")
+    val perfEntityCullingInterval = IntValue(10, 500, 50)
+
+    @ModuleValue("遮挡剔除实体下限", "低于该数量的实体不剔除，0 ~ 256")
+    val perfEntityCullingMin = IntValue(0, 256, 0)
+
+    @ModuleValue("玩家渲染距离", "0.10 ~ 1.00 倍")
+    val perfPlayerDist = FloatValue(0.1f, 1f, 1f, 2)
+
+    @ModuleValue("友好生物渲染距离", "0.10 ~ 1.00 倍")
+    val perfPassiveDist = FloatValue(0.1f, 1f, 1f, 2)
+
+    @ModuleValue("敌对生物渲染距离", "0.10 ~ 1.00 倍")
+    val perfHostileDist = FloatValue(0.1f, 1f, 1f, 2)
+
+    @ModuleValue("其它实体渲染距离", "0.10 ~ 1.00 倍")
+    val perfMiscDist = FloatValue(0.1f, 1f, 1f, 2)
+
+    @ModuleValue("贴图分辨率下限", "Default / Half / Quarter / Eighth / Sixteenth")
+    val perfTextureResolution = IntValue(0, 4, 0)
+
+    @ModuleValue("复用可见区块", "重复使用上一帧的可见区块列表")
+    val perfReuseChunks = BooleanValue(true)
+
+    @ModuleValue("复用级别", "Conservative / Balanced / Aggressive")
+    val perfReuseLevel = IntValue(0, 2, 0)
+
+    @ModuleValue("自适应区块预算", "相机静止时提高区块预算")
+    val perfAdaptiveChunk = BooleanValue(false)
+
+    @ModuleValue("合成模型变换", "一个矩阵替代 6 次定长调用")
+    val perfComposedModel = BooleanValue(false)
+
+    @ModuleValue("原版字体整串提交", "原版字体按整串提交")
+    val perfBatchVanillaFont = BooleanValue(false)
+
+    @ModuleValue("字形快速查表", "查表替代线性扫描")
+    val perfFastGlyph = BooleanValue(true)
+
+    @ModuleValue("乱码慢速重排", "乱码文本每 tick 重排一次")
+    val perfSlowObfuscation = BooleanValue(false)
+
+    @ModuleValue("阴影文本单次录制", "阴影与正文一次录制")
+    val perfMergeShadow = BooleanValue(true)
+
+    @ModuleValue("物品模型缓存", "物品 display list 缓存")
+    val perfCacheItemModels = BooleanValue(false)
+
+    @ModuleValue("碰撞快速路径", "碰撞查询走快速路径")
+    val perfFastCollision = BooleanValue(false)
+
+    @ModuleValue("纹理上传快速路径", "纹理上传跳过冗余检查")
+    val perfFastTextureUpload = BooleanValue(true)
+
+    // ---------------------------------------------------------------- 第三批：鱼竿 · 亮度 · 模糊
+
+    @ModuleValue("增强鱼竿", "加粗钓线，看得更清楚")
+    val betterFishingRod = BooleanValue(false)
+
+    @ModuleValue("钓线宽度", "1.0 ~ 10.0，按 0.5 吸附")
+    val rodStringWidth = FloatValue(1f, 10f, 1f, 1)
+
+    @ModuleValue("永久亮度", "关闭后还原开启前的亮度")
+    val fullBright = BooleanValue(false)
+
+    @ModuleValue("动态模糊", "Old 帧混合 / New 后处理")
+    val motionBlur = BooleanValue(false)
+
+    @ModuleValue("模糊模式", "Old / New")
+    val mbMode = IntValue(0, 1, 1)
+
+    @ModuleValue("模糊强度", "0 ~ 10，按 0.5 吸附")
+    val mbStrength = FloatValue(0f, 10f, 2f, 1)
 
     override fun init() {
         instance = this

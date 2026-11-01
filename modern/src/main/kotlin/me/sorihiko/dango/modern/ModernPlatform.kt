@@ -14,8 +14,8 @@ object ModernPlatform : Platform {
 
     private val mc: Minecraft get() = Minecraft.getInstance()
 
-    // .minecraft/config/dangomusic（Fabric 和 Forge 都是这个位置，不依赖任何一边的 API）
-    override val configDir: Path get() = mc.gameDirectory.toPath().resolve("config").resolve(DangoMusic.MOD_ID)
+    // .minecraft/config/Music PVP（Fabric 和 Forge 都是这个位置，不依赖任何一边的 API）
+    override val configDir: Path get() = mc.gameDirectory.toPath().resolve("config").resolve(DangoMusic.CONFIG_DIR)
 
     override val playerName: String get() = mc.user.name
 

@@ -43,6 +43,8 @@ public class BetterChat extends Feature {
     public static int minCopyLength = 3;
     /** 动作栏消息（packet type 2）是否也参与折叠。 */
     public static boolean foldActionBar = false;
+    /** 聊天整体不透明度（0 ~ 100），由宿主设置页写入；100 = 与原版完全一致。 */
+    public static int opacity = 100;
 
     /** 静态：transformer 以 INVOKESTATIC 调用 {@link #onChatPacket}，状态必须跟着静态化。 */
     private static IChatComponent lastMessage;
@@ -69,6 +71,27 @@ public class BetterChat extends Feature {
     public static void reset() {
         lastMessage = null;
         counter = 1;
+    }
+
+    /**
+     * 聊天透明度：把原版 {@code GuiNewChat#drawChat} 里背景与文字的颜色 alpha 按百分比缩放。
+     *
+     * <p>由 coremod 在每次绘制前以 {@code INVOKESTATIC} 调用；100% 或功能关闭时原样返回，
+     * 保证默认设置下与原版像素级一致。RGB 三通道完全不动。
+     */
+    public static int alpha(int color) {
+        if (!using || opacity >= 100) {
+            return color;
+        }
+        int percent = opacity;
+        if (percent <= 0) {
+            return color & 0xFFFFFF;
+        }
+        int a = (color >>> 24) & 0xFF;
+        if (a == 0) {
+            return color;
+        }
+        return (((a * percent) / 100) << 24) | (color & 0xFFFFFF);
     }
 
     /**

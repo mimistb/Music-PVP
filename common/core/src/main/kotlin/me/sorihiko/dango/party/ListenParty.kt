@@ -70,7 +70,7 @@ object ListenParty {
         private set
     @Volatile var hostUid = ""
         private set
-    /** 本机的固定 ID（写进 config/dangomusic/party_id.txt），用来区分房间里的成员 */
+    /** 本机的固定 ID（写进 config/Music PVP/party_id.txt），用来区分房间里的成员 */
     @Volatile var myUid = ""
         private set
     @Volatile var members: List<Member> = emptyList()

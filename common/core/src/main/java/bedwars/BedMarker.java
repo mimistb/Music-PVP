@@ -27,6 +27,40 @@ public final class BedMarker {
         return new BedMarker(x, y, z, footX, footZ, newTeam);
     }
 
+    /**
+     * 从任意一个床方块（HEAD 或 FOOT）及其 metadata 生成 marker。
+     *
+     * <p>meta bit 0x8 = HEAD；低 2 位是 vanilla {@code FACING}（FOOT -&gt; HEAD）的水平索引
+     * （0=+Z、1=-X、2=-Z、3=+X）。这里换算成 HEAD -&gt; FOOT 向量再定位另一端，
+     * 所以扫到 HEAD 或扫到 FOOT 都会得到同一个 HEAD 坐标。
+     */
+    public static BedMarker fromBlock(int x, int y, int z, int meta) {
+        final boolean head = (meta & 0x8) != 0;
+        final int fx;
+        final int fz;
+        switch (meta & 0x3) {
+            case 1:
+                fx = 1;
+                fz = 0;
+                break;
+            case 2:
+                fx = 0;
+                fz = 1;
+                break;
+            case 3:
+                fx = -1;
+                fz = 0;
+                break;
+            default:
+                fx = 0;
+                fz = -1;
+                break;
+        }
+        return head
+                ? new BedMarker(x, y, z, x + fx, z + fz)
+                : new BedMarker(x - fx, y, z - fz, x, z);
+    }
+
     /** 床中心（HEAD 与脚部中点，+0.5 对齐方块中心）。 */
     public double centerX() {
         return (x + footX + 1.0) * 0.5;

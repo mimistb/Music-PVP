@@ -2,85 +2,69 @@ package me.sorihiko.dango.module.impls.music
 
 import bedwarsstats.BedWarsStats
 import me.sorihiko.dango.DangoClient
-import me.sorihiko.dango.event.EventHandler
-import me.sorihiko.dango.events.WorldRenderEndEvent
 import me.sorihiko.dango.font.MixedText
 import me.sorihiko.dango.gfx.GuiCanvas
 import me.sorihiko.dango.hud.BedWarsData
 import me.sorihiko.dango.module.Category
 import me.sorihiko.dango.module.Module
 import me.sorihiko.dango.module.ModuleMeta
-import me.sorihiko.dango.module.values.BooleanValue
 import me.sorihiko.dango.module.values.FloatValue
 import me.sorihiko.dango.module.values.ModuleValue
 import me.sorihiko.dango.platform.Keys
 import me.sorihiko.dango.ui.LayoutBounds
-import me.sorihiko.dango.ui.ShadowStyle
 import me.sorihiko.dango.ui.ShapeStyle
 import me.sorihiko.dango.ui.Theme
-import me.sorihiko.dango.ui.Vec2
 import me.sorihiko.dango.utils.Color
 
 import java.util.Locale
 import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.min
 
 /**
- * TAB 统计列表：按住 TAB 时在屏幕中间显示在场所有人的 Hypixel 数据。
+ * TAB 统计列表：按住 TAB 时，在灵动岛里横向排列显示在场所有人的 Hypixel 数据。
  *
  * 名单由平台层每 tick 从 TAB 玩家列表写进 [BedWarsData.tabNames]，
- * 统计来自 [BedWarsData.statsFor] 的缓存（由自动名单管线与手动查询填充）；
- * 原版 TAB 列表在同一个界面帧里更晚绘制，会盖住这块面板，所以平台层在
- * 面板打开时取消 RenderGameOverlayEvent 的 PLAYER_LIST，跳过原版列表。
+ * 统计来自 [BedWarsData.statsFor] 的缓存（由自动名单管线与手动查询填充）。
+ * 列表不再自己画在屏幕中间：尺寸由 [measure] 交给灵动岛，绘制进灵动岛的胶囊内容区，
+ * 灵动岛尺寸不够时会换行 / 截断并标注显示人数，保证不超出屏幕。
+ *
+ * 歌词开关打开时 [isOpen] 为 false：列表临时隐藏，避免和歌词抢同一个胶囊；
+ * 此时原版 TAB 列表也不再被拦截，按住 TAB 仍能看到原版名单。
  *
  * 本模块只读 BedWarsData，不直接碰游戏对象。
  */
 @ModuleMeta(Category.MUSIC, "TabStats")
 class TabStatsHudModule : Module() {
 
-    @ModuleValue("液态玻璃", "液态玻璃背景；关闭后为纯黑面板")
-    private val glass = BooleanValue(true)
-
-    @ModuleValue("缩放", "列表面板大小")
+    @ModuleValue("缩放", "灵动岛内 TAB 列表的大小")
     private val scale = FloatValue(0.6f, 1.6f, 1f, 2)
 
-    private var context: GuiCanvas? = null
     private val mt = MixedText()
 
-    /** 面板是否正在显示（平台层据此隐藏原版 TAB 列表） */
+    /**
+     * 列表是否正在灵动岛里显示（平台层据此隐藏原版 TAB 列表、统计管线据此补查在场所有人）。
+     *
+     * 需要同时满足：本模块开启、在游戏内、没开聊天栏、按住 TAB，
+     * 且灵动岛能承接列表（灵动岛开启、歌词关闭）。
+     */
     val isOpen: Boolean
         get() = enabled && DangoClient.platform.inGame &&
                 !DangoClient.platform.chatOpen &&
-                DangoClient.platform.isKeyDown(Keys.TAB)
+                DangoClient.platform.isKeyDown(Keys.TAB) &&
+                DynamicIslandModule.of()?.isIslandTabHost == true
 
-    // ---- 布局常量（逻辑像素） ----
-    private val pad = 12f
-    private val titleH = 24f
-    private val entryW = 196f
-    private val entryH = 30f
-    private val colGap = 8f
-    private val rowGap = 4f
-    private val avatar = 20f
-    private val nameSize = 11f
-    private val lineSize = 8.5f
+    /** 当前一帧的横向布局（[measure] 算好，[draw] 直接复用，避免每帧重复排版） */
+    private class Grid {
+        var scale = 1f
+        var cols = 1
+        var shown = 0
+        var total = 0
+        var w = 0f
+        var h = 0f
+    }
 
-    /** 名字 / 统计行可用宽度（固定列宽，缓存裁剪结果就够了） */
-    private val nameMaxW = entryW - avatar - 14f
-    private val lineMaxW = entryW - avatar - 10f
-
-    /** 面板玻璃：半径 / 折射按小面板缩放，避免大斜面糊住文字 */
-    private val panelGlass = Theme.GLASS_WINDOW.copy(
-        radius = 14f,
-        refraction = 12f,
-        bevel = 14f,
-        dispersion = 0.22f,
-        shadow = ShadowStyle(Color(0f, 0f, 0f, 0.28f), 24f, Vec2(0f, -8f)),
-    )
-
-    private val darkPanel = Color(0.02f, 0.02f, 0.03f, 0.86f)
-    private val panelBorder = Color(1f, 1f, 1f, 0.08f)
-    private val avatarFill = Color(1f, 1f, 1f, 0.07f)
-    private val avatarRing = Color(1f, 1f, 1f, 0.10f)
+    private val grid = Grid()
 
     // ---- 每个条目的显示字符串缓存：名单 / 数据版本 / 设置变化时才重建 ----
     private var cachedSource: Array<String>? = null
@@ -90,6 +74,10 @@ class TabStatsHudModule : Module() {
     private val cInitial = ArrayList<String>()
     private val cLine = ArrayList<String>()
     private val cHasData = ArrayList<Boolean>()
+
+    private val avatarFill = Color(1f, 1f, 1f, 0.07f)
+    private val avatarRing = Color(1f, 1f, 1f, 0.10f)
+    private val entryFill = Color(1f, 1f, 1f, 0.05f)
 
     override fun init() {
         instance = this
@@ -104,7 +92,7 @@ class TabStatsHudModule : Module() {
 
     private fun width(s: String, size: Float, font: String = Theme.FONT_REGULAR): Float = mt.width(s, size, font)
 
-    /** 统计设置指纹：样式 / 小数位 + 7 个显示开关 */
+    /** 统计设置指纹：样式 / 小数位 + 7 个显示开关 + 列表缩放 */
     private fun fingerprint(): Int {
         var f = BedWarsData.hypStyle.coerceIn(0, 2)
         f = f * 3 + BedWarsData.hypDecimals.coerceIn(0, 2)
@@ -115,6 +103,8 @@ class TabStatsHudModule : Module() {
         f = f * 2 + (if (BedWarsData.hypWinStreak) 1 else 0)
         f = f * 2 + (if (BedWarsData.hypWins) 1 else 0)
         f = f * 2 + (if (BedWarsData.hypNetLevel) 1 else 0)
+        // 缩放变了裁剪宽度也变，条目字符串要重建
+        f = f * 17 + (scale.value * 100f).toInt().coerceIn(60, 160)
         return f
     }
 
@@ -166,105 +156,136 @@ class TabStatsHudModule : Module() {
         cInitial.clear()
         cLine.clear()
         cHasData.clear()
+        val s = scale.value
+        val nameMaxW = (ENTRY_W - AVATAR - 12f) * s
+        val lineMaxW = (ENTRY_W - AVATAR - 10f) * s
         for (raw in names) {
             val name = raw.trim()
             if (name.isEmpty()) continue
             val stats = BedWarsData.statsFor(name)
-            cName.add(mt.trim(name, nameMaxW, nameSize, Theme.FONT_SEMIBOLD))
+            cName.add(mt.trim(name, nameMaxW, NAME_SIZE * s, Theme.FONT_SEMIBOLD))
             cInitial.add(name.substring(0, 1).uppercase(Locale.ROOT))
-            cLine.add(if (stats == null) "无数据" else mt.trim(statsLine(stats), lineMaxW, lineSize, Theme.FONT_MEDIUM))
+            cLine.add(if (stats == null) "无数据" else mt.trim(statsLine(stats), lineMaxW, LINE_SIZE * s, Theme.FONT_MEDIUM))
             cHasData.add(stats != null)
         }
     }
 
-    @EventHandler
-    fun render(e: WorldRenderEndEvent) {
-        if (!isOpen) return
+    /**
+     * 按灵动岛允许的尺寸计算横向列表大小（单位：灵动岛逻辑像素）。
+     *
+     * 条目从左往右排、排满一行再往下换行；宽高都收在 [maxW] / [maxH] 里，
+     * 高度不够时按行截断并在标题标注"显示 x / y 人"，保证胶囊不超出屏幕。
+     */
+    fun measure(maxW: Float, maxH: Float): Pair<Float, Float> {
         ensureCache()
-        val platform = DangoClient.platform
-
-        val uiScale = min(platform.windowWidth / 1280f, platform.windowHeight / 800f).coerceAtLeast(0.5f)
-        val k = uiScale * scale.value
-        val lw = platform.windowWidth / k
-        val lh = platform.windowHeight / k
-        val mx = platform.mouseX / k
-        val my = platform.mouseY / k
-
+        val s = scale.value
         val n = cName.size
-        // 先按可用高度算每列最多几行，再按人数决定列数；宽度不够时截断并标注显示人数
-        val maxH = (lh - 16f).coerceAtLeast(pad * 2f + titleH + entryH)
-        val maxW = (lw - 16f).coerceAtLeast(pad * 2f + entryW)
-        val maxRows = (((maxH - pad * 2f - titleH + rowGap) / (entryH + rowGap)).toInt()).coerceAtLeast(1)
-        var cols = if (n == 0) 1 else ceil(n.toFloat() / maxRows.toFloat()).toInt().coerceAtLeast(1)
-        val maxCols = (((maxW - pad * 2f + colGap) / (entryW + colGap)).toInt()).coerceAtLeast(1)
-        if (cols > maxCols) cols = maxCols
-        val shown = min(n, cols * maxRows)
-        val rows = if (shown == 0) 0 else ceil(shown.toFloat() / cols.toFloat()).toInt().coerceAtLeast(1)
+        val padX = PAD_X * s
+        val padY = PAD_Y * s
+        val titleH = TITLE_H * s
+        val colW = ENTRY_W * s
+        val rowH = ENTRY_H * s
+        val gapX = GAP_X * s
+        val gapY = GAP_Y * s
 
-        val bodyH = if (rows == 0) 18f else rows * entryH + (rows - 1) * rowGap
-        val panelW = cols * entryW + (cols - 1) * colGap + pad * 2f
-        val panelH = pad * 2f + titleH + bodyH
-        val x = (lw - panelW) * 0.5f
-        val y = (lh - panelH) * 0.5f
+        val availW = (maxW - padX * 2f).coerceAtLeast(colW)
+        var cols = floor((availW + gapX) / (colW + gapX)).toInt().coerceAtLeast(1)
+        if (n > 0) cols = min(cols, n)
+        val needRows = if (n == 0) 0 else ceil(n.toFloat() / cols.toFloat()).toInt()
+        val availH = (maxH - padY * 2f - titleH).coerceAtLeast(rowH)
+        val maxRows = floor((availH + gapY) / (rowH + gapY)).toInt().coerceAtLeast(1)
+        val rows = min(needRows, maxRows)
+        val shown = min(n, cols * rows)
 
-        val ctx = context ?: DangoClient.gfx.newCanvas().also { context = it }
-        ctx.begin(glass.get(), mx.toInt(), my.toInt())
-        try {
-            ctx.pushScale(k, k, 1f)
-            val panel = LayoutBounds(x, y, panelW, panelH)
-            if (glass.get()) {
-                ctx.drawGlass(panel, panelGlass)
-            } else {
-                ctx.drawShape(panel, ShapeStyle(darkPanel, 14f, 1f, panelBorder))
-            }
-
-            mt.clear()
-            mt.clip = panel
-
-            text(ctx, "在场玩家", panel.x + pad, panel.y + pad, 12f, Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD)
-            val tw = width("在场玩家", 12f, Theme.FONT_SEMIBOLD)
-            val count = if (shown < n) "显示 $shown / $n 人" else "$n 人"
-            text(ctx, count, panel.x + pad + tw + 8f, panel.y + pad + 2f, 9.5f, Theme.TEXT_SECONDARY, Theme.FONT_MEDIUM)
-
-            if (n == 0) {
-                text(ctx, "无人在线", panel.x + pad, panel.y + pad + titleH, 10f, Theme.TEXT_TERTIARY, Theme.FONT_MEDIUM)
-            } else {
-                var idx = 0
-                for (c in 0 until cols) {
-                    for (r in 0 until rows) {
-                        if (idx >= shown) break
-                        val ex = panel.x + pad + c * (entryW + colGap)
-                        val ey = panel.y + pad + titleH + r * (entryH + rowGap)
-                        drawEntry(ctx, idx, ex, ey)
-                        idx++
-                    }
-                }
-            }
-
-            ctx.popTransform()
-            mt.flush(k)
-        } finally {
-            ctx.end()
-        }
+        val bodyH = if (rows == 0) BODY_MIN_H * s else rows * rowH + (rows - 1) * gapY
+        grid.scale = s
+        grid.cols = cols
+        grid.shown = shown
+        grid.total = n
+        grid.w = cols * colW + (cols - 1) * gapX + padX * 2f
+        grid.h = padY * 2f + titleH + bodyH
+        return grid.w to grid.h
     }
 
-    private fun drawEntry(ctx: GuiCanvas, i: Int, ex: Float, ey: Float) {
-        val headY = ey + (entryH - avatar) * 0.5f
-        ctx.drawShape(LayoutBounds(ex, headY, avatar, avatar), ShapeStyle(avatarFill, avatar * 0.5f, 1f, avatarRing))
-        val initial = cInitial[i]
-        text(ctx, initial, ex + (avatar - width(initial, 9f, Theme.FONT_SEMIBOLD)) * 0.5f,
-            headY + (avatar - 9f * 0.73f) * 0.5f, 9f, Theme.TEXT_SECONDARY, Theme.FONT_SEMIBOLD)
+    /** 把横向列表画进灵动岛内容区（[bounds] 是灵动岛逻辑坐标里的可用区域） */
+    fun draw(ctx: GuiCanvas, bounds: LayoutBounds, k: Float) {
+        ensureCache()
+        val g = grid
+        val s = g.scale
+        if (s <= 0f) return
+        val padX = PAD_X * s
+        val padY = PAD_Y * s
 
-        val tx = ex + avatar + 8f
-        text(ctx, cName[i], tx, ey + 3f, nameSize, Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD)
+        mt.clear()
+        mt.clip = bounds
+
+        val headerY = bounds.y + padY
+        text(ctx, "在场玩家", bounds.x + padX, headerY, TITLE_SIZE * s, Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD)
+        val tw = width("在场玩家", TITLE_SIZE * s, Theme.FONT_SEMIBOLD)
+        val count = if (g.shown < g.total) "显示 ${g.shown} / ${g.total} 人" else "${g.total} 人"
+        text(ctx, count, bounds.x + padX + tw + 8f * s, headerY + s, COUNT_SIZE * s, Theme.TEXT_SECONDARY, Theme.FONT_MEDIUM)
+
+        if (g.total == 0) {
+            text(
+                ctx, "无人在线", bounds.x + padX, headerY + TITLE_H * s, BODY_SIZE * s,
+                Theme.TEXT_TERTIARY, Theme.FONT_MEDIUM,
+            )
+        } else {
+            val top = bounds.y + padY + TITLE_H * s
+            for (i in 0 until g.shown) {
+                val c = i % g.cols
+                val r = i / g.cols
+                drawEntry(
+                    ctx, i,
+                    bounds.x + padX + c * (ENTRY_W + GAP_X) * s,
+                    top + r * (ENTRY_H + GAP_Y) * s, s,
+                )
+            }
+        }
+        mt.flush(k)
+    }
+
+    private fun drawEntry(ctx: GuiCanvas, i: Int, ex: Float, ey: Float, s: Float) {
+        // 条目底色：横向排开时更容易分辨每个玩家
+        ctx.drawShape(LayoutBounds(ex, ey, ENTRY_W * s, ENTRY_H * s), ShapeStyle(entryFill, 7f * s))
+        val av = AVATAR * s
+        val ax = ex + 6f * s
+        val ay = ey + (ENTRY_H * s - av) * 0.5f
+        ctx.drawShape(LayoutBounds(ax, ay, av, av), ShapeStyle(avatarFill, av * 0.5f, 1f, avatarRing))
+        val initial = cInitial[i]
+        text(
+            ctx, initial, ax + (av - width(initial, 9f * s, Theme.FONT_SEMIBOLD)) * 0.5f,
+            ay + (av - 9f * s * 0.73f) * 0.5f, 9f * s, Theme.TEXT_SECONDARY, Theme.FONT_SEMIBOLD,
+        )
+
+        val tx = ax + av + 6f * s
+        text(ctx, cName[i], tx, ey + 3f * s, NAME_SIZE * s, Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD)
         val line = cLine[i]
         if (line.isNotEmpty()) {
-            text(ctx, line, tx, ey + 16.5f, lineSize,
-                if (cHasData[i]) Theme.TEXT_SECONDARY else Theme.TEXT_TERTIARY, Theme.FONT_MEDIUM)
+            text(
+                ctx, line, tx, ey + 14.5f * s, LINE_SIZE * s,
+                if (cHasData[i]) Theme.TEXT_SECONDARY else Theme.TEXT_TERTIARY, Theme.FONT_MEDIUM,
+            )
         }
     }
 
     companion object {
+        // ---- 布局常量（缩放 1 时的逻辑像素） ----
+        private const val PAD_X = 10f
+        private const val PAD_Y = 8f
+        private const val TITLE_H = 15f
+        private const val TITLE_SIZE = 10f
+        private const val COUNT_SIZE = 8.5f
+        private const val BODY_MIN_H = 16f
+        private const val BODY_SIZE = 9f
+        private const val ENTRY_W = 170f
+        private const val ENTRY_H = 26f
+        private const val GAP_X = 6f
+        private const val GAP_Y = 4f
+        private const val AVATAR = 18f
+        private const val NAME_SIZE = 10.5f
+        private const val LINE_SIZE = 8f
+
         @Volatile
         private var instance: TabStatsHudModule? = null
 

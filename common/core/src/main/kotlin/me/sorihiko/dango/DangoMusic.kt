@@ -7,6 +7,7 @@ import me.sorihiko.dango.module.Module
 import me.sorihiko.dango.module.ModuleManager
 import me.sorihiko.dango.platform.Platform
 
+import java.nio.file.Files
 import java.nio.file.Path
 
 /**
@@ -15,8 +16,12 @@ import java.nio.file.Path
  */
 class DangoMusic private constructor(val platform: Platform) {
     companion object {
+        /** Forge / 资源命名空间用的 modid，不能带空格，改显示名时保持不动 */
         const val MOD_ID = "dangomusic"
         const val NAME = "Dango Music"
+
+        /** 配置文件目录名：.minecraft/config/Music PVP */
+        const val CONFIG_DIR = "Music PVP"
 
         lateinit var instance: DangoMusic
             private set
@@ -34,7 +39,7 @@ class DangoMusic private constructor(val platform: Platform) {
         }
     }
 
-    /** 配置、登录凭证、缓存都放在 .minecraft/config/dangomusic/ */
+    /** 配置、登录凭证、缓存都放在 .minecraft/config/Music PVP/ */
     val clientDir: Path = platform.configDir
 
     val eventManager = EventManager()
@@ -42,6 +47,7 @@ class DangoMusic private constructor(val platform: Platform) {
     val configManager = ConfigManager(moduleManager, clientDir.resolve("config.json"))
 
     private fun init(modules: List<Module>) {
+        migrateLegacyConfigDir()
         clientDir.toFile().mkdirs()
 
         modules.forEach { moduleManager.register(it) }
@@ -50,5 +56,19 @@ class DangoMusic private constructor(val platform: Platform) {
         configManager.load()
         eventManager.addListener(configManager)
         configManager.installShutdownHook()
+    }
+
+    /**
+     * 旧版本的目录是 config/dangomusic。改名后新目录还不存在时把旧目录整体搬过来，
+     * 这样升级后设置、登录 Cookie 和本地音乐库都不会丢。
+     */
+    private fun migrateLegacyConfigDir() {
+        val legacy = clientDir.resolveSibling(MOD_ID)
+        if (Files.exists(clientDir) || !Files.exists(legacy)) return
+        try {
+            Files.move(legacy, clientDir)
+        } catch (ignored: Exception) {
+            // 移动失败（占用、权限等）就保持旧目录，不影响启动
+        }
     }
 }

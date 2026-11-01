@@ -179,6 +179,9 @@ class DynamicIslandModule : Module() {
     /** 正在显示灵动岛歌词 */
     val lyricsEnabled: Boolean get() = enabled && islandLyricsSetting
 
+    /** 灵动岛能否承接 TAB 列表：模块开启且歌词关闭（歌词开着时列表临时隐藏） */
+    val isIslandTabHost: Boolean get() = enabled && !islandLyricsSetting
+
     /** 歌词（当前句 / 下一句）的排版缓存：同一句、同一字号每帧直接复用，不再反复量宽度 */
     private class LineCache {
         var src: String? = null
@@ -249,7 +252,7 @@ class DynamicIslandModule : Module() {
 
     // ---------------------------------------------------------------- 尺寸（逻辑像素）
 
-    private fun sizeOf(kind: Kind): Pair<Float, Float> = when (kind) {
+    private fun sizeOf(kind: Kind, tabList: Boolean, maxW: Float, maxH: Float): Pair<Float, Float> = when (kind) {
         Kind.SONG -> {
             val t = MusicPlayer.current
             val tw = if (t == null) 0f else max(
@@ -259,31 +262,36 @@ class DynamicIslandModule : Module() {
             (76f + max(tw, 150f) + 44f) to 76f
         }
         Kind.IDLE -> {
-            val bed = bedRowVisible()
-            // 床行宽度（最多 BED_ROW_W，左右各留 12）
-            val bedW = if (bed) width(bedShown(BedWarsData.bedLine, 9f), 9f, Theme.FONT_MEDIUM) + 24f else 0f
-            if (musicIdle()) {
-                val size = lyricSize.value
-                val cur = curCurrent
-                val nxt = curNext
-                val title = curTitle
-                // 歌词按当前这句（以及提前显示的那句）的长度走，没有歌词时按歌名长度走
-                val textW = when {
-                    cur != null && nxt != null -> max(kara.width, lineWidth(line2, nxt, size))
-                    cur != null -> kara.width
-                    nxt != null -> lineWidth(line2, nxt, size)
-                    title != null -> lineWidth(lineTitle, title, size)
-                    else -> 0f
-                }.coerceAtLeast(56f)
-                // 同时显示"已唱 + 未唱"两行时需要更高一点；有床行时再给一行高度
-                val hh = (if (cur != null && nxt != null) 44f else 32f) + if (bed) BED_ROW_H else 0f
-                max(9f + 22f + 9f + textW + 12f + 14f + 12f, bedW) to hh
-            } else if (bed) {
-                // 没在放歌但比赛激活：只显示一条床状态胶囊
-                bedW to 30f
+            // 按住 TAB：整个胶囊临时让给横向 TAB 列表（歌词开着时 tabList 为 false，不会进来）
+            if (tabList) {
+                TabStatsHudModule.of()?.measure(maxW, maxH) ?: (0f to 0f)
             } else {
-                // 没在放歌：灵动岛不显示任何信息（玩家名 / 帧率 / 延迟 / 时间已经拆到信息胶囊模块）
-                0f to 0f
+                val bed = bedRowVisible()
+                // 床行宽度（最多 BED_ROW_W，左右各留 12）
+                val bedW = if (bed) width(bedShown(BedWarsData.bedLine, 9f), 9f, Theme.FONT_MEDIUM) + 24f else 0f
+                if (musicIdle()) {
+                    val size = lyricSize.value
+                    val cur = curCurrent
+                    val nxt = curNext
+                    val title = curTitle
+                    // 歌词按当前这句（以及提前显示的那句）的长度走，没有歌词时按歌名长度走
+                    val textW = when {
+                        cur != null && nxt != null -> max(kara.width, lineWidth(line2, nxt, size))
+                        cur != null -> kara.width
+                        nxt != null -> lineWidth(line2, nxt, size)
+                        title != null -> lineWidth(lineTitle, title, size)
+                        else -> 0f
+                    }.coerceAtLeast(56f)
+                    // 同时显示"已唱 + 未唱"两行时需要更高一点；有床行时再给一行高度
+                    val hh = (if (cur != null && nxt != null) 44f else 32f) + if (bed) BED_ROW_H else 0f
+                    max(9f + 22f + 9f + textW + 12f + 14f + 12f, bedW) to hh
+                } else if (bed) {
+                    // 没在放歌但比赛激活：只显示一条床状态胶囊
+                    bedW to 30f
+                } else {
+                    // 没在放歌：灵动岛不显示任何信息（玩家名 / 帧率 / 延迟 / 时间已经拆到信息胶囊模块）
+                    0f to 0f
+                }
             }
         }
     }
@@ -296,6 +304,18 @@ class DynamicIslandModule : Module() {
         val now = System.nanoTime()
         val dt = if (lastNanos == 0L) 0.016f else ((now - lastNanos) / 1e9f).coerceIn(0f, 0.05f)
         lastNanos = now
+
+        // 先把逻辑坐标下的可用范围算出来：TAB 列表要按屏幕尺寸排版，不能越界
+        val platform = DangoClient.platform
+        val uiScale = min(platform.windowWidth / 1280f, platform.windowHeight / 800f).coerceAtLeast(0.5f)
+        val k = uiScale * scale.value
+        val lw = platform.windowWidth / k
+        val lh = platform.windowHeight / k
+        val sf = platform.guiScale
+        val top = 18f * sf / k                       // 和原来一样，留出 Boss 血条的位置
+
+        // 按住 TAB 时灵动岛临时让给 TAB 统计列表；歌词开着时 isOpen 为 false（列表自动隐藏）
+        val tabList = TabStatsHudModule.of()?.isOpen == true
 
         watchMusic()
         curCurrent = null
@@ -330,14 +350,18 @@ class DynamicIslandModule : Module() {
         }
         lineAlpha = min(1f, lineAlpha + dt / 0.16f)
 
-        val want = desired()
-        if (want == Kind.IDLE && !musicIdle() && !bedRowVisible()) {
+        val want = if (tabList) Kind.IDLE else desired()
+        if (want == Kind.IDLE && !tabList && !musicIdle() && !bedRowVisible()) {
             // 没在放歌、也没有床提醒：灵动岛不再显示信息（信息已经拆到信息胶囊模块）
             return
         }
 
         // 内容切换：先淡出旧内容，再换成新内容淡入
-        if (shown != want) {
+        if (tabList) {
+            // 按住 TAB 要即开即用：跳过淡出，直接让位给 TAB 列表
+            shown = Kind.IDLE
+            contentAlpha = 1f
+        } else if (shown != want) {
             contentAlpha -= dt / 0.09f
             if (contentAlpha <= 0f) {
                 contentAlpha = 0f
@@ -348,7 +372,7 @@ class DynamicIslandModule : Module() {
         }
 
         // 弹簧：略带回弹，接近 iOS 灵动岛的手感
-        val (tw, th) = sizeOf(want)
+        val (tw, th) = sizeOf(want, tabList, lw - 12f, lh - 12f)
         val stiff = 230f
         val damp = 24f
         vw += ((tw - w) * stiff - vw * damp) * dt
@@ -357,15 +381,9 @@ class DynamicIslandModule : Module() {
         h += vh * dt
         if (w < 1f || h < 1f) return
 
-        val platform = DangoClient.platform
         val ctx = context ?: DangoClient.gfx.newCanvas().also { context = it }
         ctx.begin(glass.get(), 0, 0)
         try {
-            val uiScale = min(platform.windowWidth / 1280f, platform.windowHeight / 800f).coerceAtLeast(0.5f)
-            val k = uiScale * scale.value
-            val lw = platform.windowWidth / k
-            val sf = platform.guiScale
-            val top = 18f * sf / k                       // 和原来一样，留出 Boss 血条的位置
             val baseX = (lw - w) / 2f
             val layout = HudLayoutModule.of()
             var pill = LayoutBounds(
@@ -400,6 +418,14 @@ class DynamicIslandModule : Module() {
                     }
                 }
             }
+            if (tabList) {
+                // 横向 TAB 列表很宽 / 很高：按住 TAB 时把胶囊收进屏幕，避免越界遮挡
+                pill = LayoutBounds(
+                    pill.x.coerceIn(4f, (lw - w - 4f).coerceAtLeast(4f)),
+                    pill.y.coerceIn(4f, (lh - h - 4f).coerceAtLeast(4f)),
+                    w, h,
+                )
+            }
             val r = min(h / 2f, 22f)
 
             ctx.pushScale(k, k, 1f)
@@ -422,7 +448,7 @@ class DynamicIslandModule : Module() {
                 cw = tw
                 ch = th
             } else {
-                val s = sizeOf(shown)
+                val s = sizeOf(shown, tabList, lw - 12f, lh - 12f)
                 cw = s.first
                 ch = s.second
             }
@@ -437,12 +463,17 @@ class DynamicIslandModule : Module() {
             when (shown) {
                 Kind.IDLE -> {
                     if (cb.width > 1f && cb.height > 1f) {
-                        val bed = bedRowVisible()
-                        // 有床行时音乐内容只占上半部分，床行贴在最下面
-                        if (musicIdle()) {
-                            drawMusicIdle(ctx, if (bed) LayoutBounds(cb.x, cb.y, cb.width, cb.height - BED_ROW_H) else cb)
+                        if (tabList) {
+                            // TAB 统计列表：临时占用整个胶囊，横向排列
+                            TabStatsHudModule.of()?.draw(ctx, cb, k)
+                        } else {
+                            val bed = bedRowVisible()
+                            // 有床行时音乐内容只占上半部分，床行贴在最下面
+                            if (musicIdle()) {
+                                drawMusicIdle(ctx, if (bed) LayoutBounds(cb.x, cb.y, cb.width, cb.height - BED_ROW_H) else cb)
+                            }
+                            if (bed) drawBedRow(ctx, cb)
                         }
-                        if (bed) drawBedRow(ctx, cb)
                     }
                 }
                 Kind.SONG -> drawSong(ctx, cb)

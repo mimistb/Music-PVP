@@ -25,7 +25,7 @@ class NeteasePlaylist(
  * 网易云音乐接口（内置播放器用）。
  *
  * 登录：把网易云网页版登录后的 Cookie（至少包含 MUSIC_U=...）放进
- *   config/dangomusic/netease_cookie.txt
+ *   config/Music PVP/netease_cookie.txt
  * 只保存在本地，只在请求 music.163.com 时带上。
  */
 object NeteaseApi {

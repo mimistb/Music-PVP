@@ -23,7 +23,7 @@ import javax.crypto.spec.SecretKeySpec
  *   1. 申请一个二维码 key
  *   2. 把 https://music.163.com/login?codekey=KEY 画成二维码，用手机网易云 App 扫
  *   3. 轮询扫码状态：801 等待扫码 / 802 已扫码待确认 / 803 成功（响应里带登录 Cookie）/ 800 过期
- * 成功后自动把 Cookie 写进 config/dangomusic/netease_cookie.txt
+ * 成功后自动把 Cookie 写进 config/Music PVP/netease_cookie.txt
  */
 object NeteaseLogin {
 

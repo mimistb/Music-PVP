@@ -2,6 +2,7 @@ package me.sorihiko.dango.musicui
 
 import me.sorihiko.dango.DangoClient
 import me.sorihiko.dango.DangoMusic
+import me.sorihiko.dango.config.UiPrefs
 import me.sorihiko.dango.hud.BedWarsData
 import me.sorihiko.dango.module.Module
 import me.sorihiko.dango.module.impls.music.AutoLyricsModule
@@ -127,7 +128,54 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
     var bindingKey: IntValue? = null
     private val keyButtons = mutableListOf<LayoutBounds>()
 
+    // 设置页分组：右键标题栏展开 / 收起，状态持久化到 config.json 的 "ui" 段
+    private val rightHits = mutableListOf<Hit>()
+    private val groupShown = HashMap<String, Float>()
+    private val groupAnimAt = HashMap<String, Long>()
+
     val editing: Boolean get() = editRow != null
+
+    /** 展开 / 收起动画时长（毫秒），200~300 之间 */
+    private val groupAnimMs = 240f
+
+    /** 分组的固定键：段名 + 标题，和界面上的卡片一一对应 */
+    private fun groupKey(g: Group): String =
+        if (g.section.isEmpty()) g.title else "${g.section}/${g.title}"
+
+    /** 当前显示进度：0 = 完全收起，1 = 完全展开；首次见到直接取持久化状态，不做假动画 */
+    private fun groupProgress(key: String): Float {
+        val target = if (UiPrefs.isGroupOpen(key)) 1f else 0f
+        val at = groupAnimAt[key]
+        val from = groupShown[key]
+        if (at == null || from == null) {
+            groupShown[key] = target
+            return target
+        }
+        val t = ((System.currentTimeMillis() - at) / groupAnimMs).coerceIn(0f, 1f)
+        if (t >= 1f) {
+            groupShown[key] = target
+            groupAnimAt.remove(key)
+            return target
+        }
+        val v = from + (target - from) * ui.easeOut(t)
+        groupShown[key] = v
+        return v
+    }
+
+    /** 右键标题栏：从当前进度平滑过渡到相反状态，并立刻写盘 */
+    private fun toggleGroup(key: String) {
+        groupShown[key] = groupProgress(key)
+        groupAnimAt[key] = System.currentTimeMillis()
+        UiPrefs.setGroupOpen(key, !UiPrefs.isGroupOpen(key))
+        DangoMusic.instance.configManager.saveIfChanged()
+    }
+
+    /** 右键命中设置页分组标题栏时返回 true（调用方据此不再执行"返回上一页"） */
+    fun mouseRightClicked(mx: Int, my: Int): Boolean {
+        val hit = rightHits.firstOrNull { it.first.contains(mx, my) } ?: return false
+        hit.second()
+        return true
+    }
 
     // ---------------------------------------------------------------- 每帧
 
@@ -141,6 +189,7 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
 
     fun beginFrame() {
         keyButtons.clear()
+        rightHits.clear()
     }
 
     fun resetScroll() {
@@ -377,6 +426,42 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
                 "fpsLimit" to "performance",
                 "perfRenderDistance" to "performance", "perfEntityDistance" to "performance",
                 "perfEntityShadows" to "performance", "perfGlassQuality" to "performance",
+                // 性能：所有子优化都挂在「性能」总开关下
+                "perfIgnoreStands" to "performance", "perfFastLoad" to "performance",
+                "perfBatchModel" to "performance", "perfLowAnimTick" to "performance",
+                "perfStaticParticle" to "performance", "perfLimitChunks" to "performance",
+                "perfDownscaleIcons" to "performance", "perfParticleCulling" to "performance",
+                "perfCacheSky" to "performance", "perfEntityCulling" to "performance",
+                "perfCullPlayers" to "perfEntityCulling",
+                "perfEntityCullingInterval" to "perfEntityCulling",
+                "perfEntityCullingMin" to "perfEntityCulling",
+                "perfCacheArmorTex" to "performance", "perfSignCulling" to "performance",
+                "perfBlockEntityCulling" to "performance",
+                "perfBlockEntityDistance" to "perfBlockEntityCulling",
+                "perfCustomHudFont" to "performance",
+                "perfCustomHudFontSize" to "perfCustomHudFont",
+                "perfFastRender" to "performance",
+                "perfHideGrass" to "performance", "perfHideDoubleGrass" to "performance",
+                "perfHideFlowers" to "performance", "perfHideDoubleFlowers" to "performance",
+                "perfHideFences" to "performance", "perfHideFenceGates" to "performance",
+                "perfHideSkulls" to "performance", "perfHideArmorStands" to "performance",
+                "perfHideItemFrames" to "performance", "perfHideMapFrames" to "performance",
+                "perfHideStuckArrows" to "performance", "perfHideGroundArrows" to "performance",
+                "perfHideLavaParticles" to "performance", "perfHideSpawnerParticles" to "performance",
+                "perfHideMobInSpawner" to "performance", "perfHidePortalParticles" to "performance",
+                "perfParticlesLimit" to "performance", "perfChunkUpdateLimit" to "performance",
+                "perfPlayerDist" to "performance", "perfPassiveDist" to "performance",
+                "perfHostileDist" to "performance", "perfMiscDist" to "performance",
+                "perfTextureResolution" to "performance",
+                "perfReuseChunks" to "performance", "perfReuseLevel" to "perfReuseChunks",
+                "perfAdaptiveChunk" to "perfLimitChunks",
+                "perfComposedModel" to "performance", "perfBatchVanillaFont" to "performance",
+                "perfFastGlyph" to "performance", "perfSlowObfuscation" to "performance",
+                "perfMergeShadow" to "performance", "perfCacheItemModels" to "performance",
+                "perfFastCollision" to "performance", "perfFastTextureUpload" to "performance",
+                // 第三批
+                "rodStringWidth" to "betterFishingRod",
+                "mbMode" to "motionBlur", "mbStrength" to "motionBlur",
                 "boFill" to "blockOverlay", "boOutline" to "blockOverlay", "boThrough" to "blockOverlay",
                 "boWidth" to "blockOverlay",
                 "boFillColor" to "boFill", "boFillAlpha" to "boFill",
@@ -385,6 +470,18 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
                 "ipSpread" to "itemPhysics", "ipStackGap" to "itemPhysics", "ipRespectCount" to "itemPhysics",
                 "chatFold" to "betterChat", "chatCopy" to "betterChat",
                 "chatFoldActionBar" to "chatFold", "chatMinLength" to "chatCopy",
+                "chatOpacity" to "betterChat",
+                // 第四批：反作弊 / 聊天数据 / 会话
+                "acSound" to "acEnabled", "acAutoBlock" to "acEnabled", "acLegitScaffold" to "acEnabled",
+                "acScaffoldA" to "acEnabled", "acScaffoldB" to "acEnabled", "acNoSlow" to "acEnabled",
+                "acConfirmCount" to "acEnabled", "acWindowSeconds" to "acEnabled",
+                "acMinConfidence" to "acEnabled", "acLegitMultiplier" to "acEnabled",
+                "adChatIgnoreTeammates" to "adChatEnabled", "adChatCompactBlacklist" to "adChatEnabled",
+                "adChatMinStars" to "adChatEnabled", "adChatMinFkdr" to "adChatEnabled",
+                "adChatMinSwKdr" to "adChatEnabled", "adChatHistory" to "adChatEnabled",
+                "adChatMaxLength" to "adChatEnabled",
+                "adSessionIdleSeconds" to "adSessionEnabled", "adSessionKeepWinstreak" to "adSessionEnabled",
+                "adSessionMaxMinutes" to "adSessionEnabled", "adSessionAvgRoundSeconds" to "adSessionEnabled",
                 "armorShowSlots" to "armorDisplay", "armorShowEmpty" to "armorDisplay", "armorPercent" to "armorDisplay",
                 "armorOnlyDamaged" to "armorDisplay", "armorLowThreshold" to "armorDisplay", "armorLowWarn" to "armorDisplay",
                 "cpsShowLeft" to "cpsDisplay", "cpsShowRight" to "cpsDisplay",
@@ -405,6 +502,25 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
                 "perfRenderDistance" to { v: Any -> (v as IntValue).value.let { if (it == 0) "跟随原版" else "$it 区块" } },
                 "perfEntityDistance" to { v: Any -> (v as IntValue).value.let { if (it == 0) "不限" else "$it 格" } },
                 "perfGlassQuality" to { v: Any -> arrayOf("高", "中", "低")[(v as IntValue).value.coerceIn(0, 2)] },
+                "perfBlockEntityDistance" to { v: Any -> "${(v as IntValue).value} 格" },
+                "perfCustomHudFontSize" to { v: Any -> "${(v as IntValue).value} px" },
+                "perfParticlesLimit" to { v: Any -> (v as IntValue).value.let { if (it == 0) "不限" else "$it 个" } },
+                "perfChunkUpdateLimit" to { v: Any -> "${(v as IntValue).value} /帧" },
+                "perfEntityCullingInterval" to { v: Any -> "${(v as IntValue).value} ms" },
+                "perfEntityCullingMin" to { v: Any -> (v as IntValue).value.let { if (it == 0) "自动" else "$it 个" } },
+                "perfPlayerDist" to { v: Any -> "%.2f×".format((v as FloatValue).value) },
+                "perfPassiveDist" to { v: Any -> "%.2f×".format((v as FloatValue).value) },
+                "perfHostileDist" to { v: Any -> "%.2f×".format((v as FloatValue).value) },
+                "perfMiscDist" to { v: Any -> "%.2f×".format((v as FloatValue).value) },
+                "perfTextureResolution" to { v: Any ->
+                    arrayOf("Default", "Half", "Quarter", "Eighth", "Sixteenth")[(v as IntValue).value.coerceIn(0, 4)]
+                },
+                "perfReuseLevel" to { v: Any ->
+                    arrayOf("Conservative", "Balanced", "Aggressive")[(v as IntValue).value.coerceIn(0, 2)]
+                },
+                "rodStringWidth" to { v: Any -> "%.1f".format((v as FloatValue).value) },
+                "mbMode" to { v: Any -> arrayOf("Old 帧混合", "New 后处理")[(v as IntValue).value.coerceIn(0, 1)] },
+                "mbStrength" to { v: Any -> "%.1f".format((v as FloatValue).value) },
                 "boWidth" to { v: Any -> "%.1f px".format((v as FloatValue).value) },
                 "boFillAlpha" to { v: Any -> "${(v as IntValue).value}%" },
                 "boOutlineAlpha" to { v: Any -> "${(v as IntValue).value}%" },
@@ -414,6 +530,19 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
                 "ipSpread" to { v: Any -> "%.2f".format((v as FloatValue).value) },
                 "ipStackGap" to { v: Any -> "%.3f".format((v as FloatValue).value) },
                 "chatMinLength" to { v: Any -> "${(v as IntValue).value} 字" },
+                "chatOpacity" to { v: Any -> "${(v as IntValue).value}%" },
+                "acConfirmCount" to { v: Any -> "${(v as IntValue).value} 条" },
+                "acWindowSeconds" to { v: Any -> "${(v as IntValue).value} 秒" },
+                "acMinConfidence" to { v: Any -> "%.2f".format((v as FloatValue).value) },
+                "acLegitMultiplier" to { v: Any -> "${(v as IntValue).value}×" },
+                "adChatMinStars" to { v: Any -> (v as IntValue).value.let { if (it == 0) "不过滤" else "≥ $it ★" } },
+                "adChatMinFkdr" to { v: Any -> (v as FloatValue).value.let { if (it <= 0f) "不过滤" else "%.2f".format(it) } },
+                "adChatMinSwKdr" to { v: Any -> (v as FloatValue).value.let { if (it <= 0f) "不过滤" else "%.2f".format(it) } },
+                "adChatHistory" to { v: Any -> "${(v as IntValue).value} 条" },
+                "adChatMaxLength" to { v: Any -> "${(v as IntValue).value} 字" },
+                "adSessionIdleSeconds" to { v: Any -> (v as IntValue).value.let { if (it == 0) "关闭" else "$it 秒" } },
+                "adSessionMaxMinutes" to { v: Any -> (v as IntValue).value.let { if (it == 0) "不限" else "$it 分钟" } },
+                "adSessionAvgRoundSeconds" to { v: Any -> "${(v as IntValue).value} 秒" },
                 "cpsWindow" to { v: Any -> "${(v as IntValue).value} ms" },
                 "armorPercent" to { v: Any -> arrayOf("百分比", "剩余-最大")[(v as IntValue).value.coerceIn(0, 1)] },
                 "armorLowThreshold" to { v: Any -> "${(v as IntValue).value}%" },
@@ -432,7 +561,7 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
             Group("信息胶囊", "玩家名 · 帧率 · 延迟 · 时间", info.m, true, info.take(), section = "信息与 HUD"),
             Group("按键显示", "W A S D · 空格", keys.m, true, keys.take(), section = "信息与 HUD"),
             Group("敌人状态", "准星对准玩家时显示", target.m, true, target.take(), section = "信息与 HUD"),
-            Group("TAB 统计列表", "按住 TAB 查看在场所有人的数据", tabStats.m, true, tabStats.take(), section = "信息与 HUD"),
+            Group("TAB 统计列表", "按住 TAB 在灵动岛里横向查看在场所有人的数据", tabStats.m, true, tabStats.take(), section = "信息与 HUD"),
             Group("打击颜色", "受伤红闪的颜色与透明度", hit.m, true, hit.take(listOf("palette", "alpha")), section = "信息与 HUD"),
             Group("床提醒", "床被威胁时在灵动岛提示", bw.m, false, bw.take(listOf("bedAlerts", "bedRadius", "bedMode", "queryName")), section = "网络与对战"),
             Group("Hypixel 统计", "可选官方 Key / NetherAPI Key · 留空回退公开源", bw.m, true, bw.take(listOf(
@@ -460,13 +589,42 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
                 "performance", "fpsLimit",
                 "perfRenderDistance", "perfEntityDistance", "perfEntityShadows", "perfGlassQuality",
             )), section = "PVP · 性能"),
+            Group("性能 · 渲染与实体", "子优化都依赖「性能」总开关", fps.m, false, fps.take(listOf(
+                "perfIgnoreStands", "perfFastLoad", "perfBatchModel", "perfLowAnimTick", "perfStaticParticle",
+                "perfLimitChunks", "perfDownscaleIcons", "perfParticleCulling", "perfCacheSky",
+                "perfEntityCulling", "perfCullPlayers", "perfEntityCullingInterval", "perfEntityCullingMin",
+                "perfCacheArmorTex", "perfSignCulling", "perfBlockEntityCulling", "perfBlockEntityDistance",
+                "perfCustomHudFont", "perfCustomHudFontSize", "perfFastRender",
+            )), section = "PVP · 性能"),
+            Group("性能 · 内容隐藏", "关闭不想要的画面元素 · 改动后自动重建区块", fps.m, false, fps.take(listOf(
+                "perfHideGrass", "perfHideDoubleGrass", "perfHideFlowers", "perfHideDoubleFlowers",
+                "perfHideFences", "perfHideFenceGates", "perfHideSkulls", "perfHideArmorStands",
+                "perfHideItemFrames", "perfHideMapFrames", "perfHideStuckArrows", "perfHideGroundArrows",
+                "perfHideLavaParticles", "perfHideSpawnerParticles", "perfHideMobInSpawner", "perfHidePortalParticles",
+            )), section = "PVP · 性能"),
+            Group("性能 · 数值与模式", "上限 / 刷新间隔 / 复用等级", fps.m, false, fps.take(listOf(
+                "perfParticlesLimit", "perfChunkUpdateLimit",
+                "perfPlayerDist", "perfPassiveDist", "perfHostileDist", "perfMiscDist",
+                "perfTextureResolution", "perfReuseChunks", "perfReuseLevel", "perfAdaptiveChunk",
+                "perfComposedModel", "perfBatchVanillaFont", "perfFastGlyph", "perfSlowObfuscation",
+                "perfMergeShadow", "perfCacheItemModels", "perfFastCollision", "perfFastTextureUpload",
+            )), section = "PVP · 性能"),
+            Group("画质增强", "鱼竿 · 亮度 · 模糊", fps.m, false, fps.take(listOf(
+                "betterFishingRod", "rodStringWidth", "fullBright", "motionBlur", "mbMode", "mbStrength",
+            )), section = "PVP · 画质"),
             Group("方块与物品", "方块高亮 · 物品物理", fps.m, false, fps.take(listOf(
                 "blockOverlay", "boFill", "boFillColor", "boFillAlpha", "boOutline", "boOutlineColor", "boOutlineAlpha",
                 "boThrough", "boWidth",
                 "itemPhysics", "ipRotate", "ipScale", "ipRollSpeed", "ipSpread", "ipStackGap", "ipRespectCount",
             )), section = "PVP · 方块与物品"),
-            Group("聊天与视角", "聊天增强 · 清洁视角", fps.m, false, fps.take(listOf(
-                "betterChat", "chatFold", "chatFoldActionBar", "chatCopy", "chatMinLength", "cleanView",
+            Group("聊天与视角", "聊天增强 · 反作弊 · 会话", fps.m, false, fps.take(listOf(
+                "betterChat", "chatFold", "chatFoldActionBar", "chatCopy", "chatMinLength", "chatOpacity", "cleanView",
+                "acEnabled", "acSound", "acAutoBlock", "acLegitScaffold", "acScaffoldA", "acScaffoldB", "acNoSlow",
+                "acConfirmCount", "acWindowSeconds", "acMinConfidence", "acLegitMultiplier",
+                "adChatEnabled", "adChatIgnoreTeammates", "adChatCompactBlacklist",
+                "adChatMinStars", "adChatMinFkdr", "adChatMinSwKdr", "adChatHistory", "adChatMaxLength",
+                "adSessionEnabled", "adSessionIdleSeconds", "adSessionKeepWinstreak", "adSessionMaxMinutes",
+                "adSessionAvgRoundSeconds",
             )), section = "PVP · 聊天与护甲"),
             Group("护甲与点击速度", "各自独立一块显示", fps.m, false, fps.take(listOf(
                 "armorDisplay", "armorShowSlots", "armorShowEmpty", "armorPercent", "armorOnlyDamaged",
@@ -510,7 +668,7 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
             }
         }
 
-        class Placed(val group: Group, val col: Int, val y: Float, val h: Float)
+        class Placed(val group: Group, val col: Int, val y: Float, val h: Float, val open: Float)
 
         val placed = mutableListOf<Placed>()
         val sectionTop = FloatArray(sectionGroups.size)
@@ -519,12 +677,16 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
             sectionTop[si] = y
             if (sectionNames[si].isNotEmpty()) y += sectionH
             val colY = FloatArray(cols)
+            var idx = 0
             for (g in sectionGroups[si]) {
-                val h = headH + g.rows.size * rowH + 6f
-                var c = 0
-                for (j in 1 until cols) if (colY[j] < colY[c] - 0.5f) c = j
-                placed += Placed(g, c, y + colY[c], h)
+                // 卡片高度跟着展开进度变化：收起时只剩标题栏
+                val open = groupProgress(groupKey(g))
+                val h = headH + g.rows.size * rowH * open + 6f
+                // 列固定轮转：动画过程中列不会被重排，卡片不会横向跳
+                val c = idx % cols
+                placed += Placed(g, c, y + colY[c], h, open)
                 colY[c] += h + gap
+                idx++
             }
             y += (colY.maxOrNull() ?: 0f) - gap + sectionGap
         }
@@ -545,7 +707,7 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
             for (g in sectionGroups[si]) {
                 val p = placed[pi]
                 val b = LayoutBounds(view.x + p.col * (colW + gap), view.y + p.y - pos, colW, p.h)
-                if (b.bottom >= view.y && b.y <= view.bottom) ui.itemAnim(pi) { drawGroup(b, g, view, rowH, headH) }
+                if (b.bottom >= view.y && b.y <= view.bottom) ui.itemAnim(pi) { drawGroup(b, g, view, rowH, headH, p.open) }
                 pi++
             }
         }
@@ -592,7 +754,7 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
         }
     }
 
-    private fun drawGroup(b: LayoutBounds, g: Group, clip: LayoutBounds, rowH: Float, headH: Float) {
+    private fun drawGroup(b: LayoutBounds, g: Group, clip: LayoutBounds, rowH: Float, headH: Float, open: Float) {
         val ctx = ui.ctx
         // 每张卡片加一圈很淡的描边，和相邻模块区分开
         ctx.drawShape(b, ShapeStyle(Color(1f, 1f, 1f, 0.05f), 14f, 1f, Color(1f, 1f, 1f, 0.07f)))
@@ -610,16 +772,38 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
                 ui.toggleSwitch(box, m.enabled, clip) { m.enabled = !m.enabled }
             }
         }
-        var y = b.y + headH
+        // 收起时提示一下操作方式（右键）
+        if (open <= 0.001f) {
+            val hint = "右键展开"
+            val hw = ui.width(hint, 9.5f)
+            ui.text(hint, b.right - 14f - hw - (if (g.toggle) 42f else 0f), b.y + 13.5f, 9.5f, Theme.TEXT_TERTIARY)
+        }
+        // 整个标题栏都算右键区域，没有盲区
+        rightHits += LayoutBounds(b.x, b.y, b.width, headH).intersect(clip) to { toggleGroup(groupKey(g)) }
+
+        if (open <= 0.001f) return
+        val bodyTop = b.y + headH
+        val bodyH = b.height - headH - 6f
+        if (bodyH <= 0f) return
+        // 动画期间只显示已经"长出来"的部分；裁剪要跟着入场位移，避免错位
+        val bodyClip = LayoutBounds(
+            b.x + ui.mt.shiftX, bodyTop + ui.mt.shiftY, b.width, bodyH,
+        ).intersect(clip)
+        ui.beginClip(bodyClip)
+        ctx.pushOpacity(open)
+        var y = bodyTop
         val moduleOff = !g.owner.enabled
         for (r in g.rows) {
             ctx.drawShape(LayoutBounds(x, y, iw, 1f), ShapeStyle(Color(1f, 1f, 1f, 0.06f)))
             val dim = moduleOff || (r.dep != null && !r.dep.get())
             if (dim) ctx.pushOpacity(0.4f)
-            drawRow(LayoutBounds(x, y, iw, rowH), r, clip)
+            drawRow(LayoutBounds(x, y, iw, rowH), r, bodyClip)
             if (dim) ctx.popOpacity()
             y += rowH
         }
+        ctx.popOpacity()
+        // ui 只有一层 scissor：画完卡片内容后恢复外层的页面裁剪
+        ui.beginClip(clip)
     }
 
     private fun drawRow(b: LayoutBounds, r: Row, clip: LayoutBounds) {

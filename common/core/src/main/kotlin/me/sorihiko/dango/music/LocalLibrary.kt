@@ -12,7 +12,7 @@ import javax.sound.sampled.AudioSystem
 import kotlin.math.min
 
 /**
- * 本地音乐：扫描 config/dangomusic/music 里的 mp3 / wav。
+ * 本地音乐：扫描 config/Music PVP/music 里的 mp3 / wav。
  *
  * 歌曲信息优先读 ID3 标签（歌名 / 歌手），没有标签就按文件名 "歌手 - 歌名" 拆；
  * ID 用负数，和网易云的歌曲 ID 区分开。同目录下同名的 .lrc 会被当作这首歌的歌词。

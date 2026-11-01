@@ -10,7 +10,7 @@ import java.nio.file.Path
  */
 interface Platform {
 
-    /** 配置、登录凭证、缓存目录（.minecraft/config/dangomusic） */
+    /** 配置、登录凭证、缓存目录（.minecraft/config/Music PVP） */
     val configDir: Path
 
     /** 当前登录的玩家名 */

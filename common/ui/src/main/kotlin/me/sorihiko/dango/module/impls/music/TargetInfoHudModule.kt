@@ -97,6 +97,8 @@ class TargetInfoHudModule : Module() {
     private var lastMouseDown = false
     private var shownAtNanos = 0L
     private var pinUntilNanos = 0L
+    /** 当前正在显示（含淡出）的目标名；换目标才重新淡入。 */
+    private var shownName: String? = null
 
     /** 复用颜色对象 */
     private val clear = Color(0f, 0f, 0f, 0f)
@@ -168,18 +170,27 @@ class TargetInfoHudModule : Module() {
 
         // 显示判定：准星瞄准玩家并按左键才出现；之后停留 holdTime，最后 fadeTime 淡出
         val down = platform.isMouseDown(0)
-        val clicked = down && !lastMouseDown && !platform.chatOpen
+        // 只有真正在游戏里（没有任何 GUI）才把左键当作触发键：开背包点击物品不该弹面板
+        val clicked = down && !lastMouseDown && platform.inGame
         lastMouseDown = down
-        if (clicked && state.hasTarget()) {
-            shownAtNanos = now
-            pinUntilNanos = now + (holdTime.value * 1_000_000_000f).toLong()
+        val targetName = state.name()
+        if (clicked && state.hasTarget() && targetName != null) {
+            val holdNanos = (holdTime.value * 1_000_000_000f).toLong()
+            val stillShown = now < pinUntilNanos && targetName == shownName
+            // 淡入 / 停留 / 淡出期间再次点击：只延长停留时间，不重播淡入动画。
+            if (!stillShown) {
+                shownAtNanos = now
+                shownName = targetName
+            }
+            pinUntilNanos = now + holdNanos
         }
         val holdLeft = (pinUntilNanos - now) / 1e9f
         if (holdLeft <= 0f) return
-        val name = state.name() ?: return
+        val name = targetName ?: return
         val fadeIn = min(1f, (now - shownAtNanos) / 1e9f / 0.12f)
         val fade = fadeTime.value
-        val fadeOut = if (fade <= 0.01f) 1f else min(1f, holdLeft / fade)
+        // 淡出时长不能超过显示时长，否则面板一出现就处于半透明状态（holdTime < fadeTime 时）
+        val fadeOut = if (fade <= 0.01f) 1f else min(1f, holdLeft / fade.coerceAtMost(holdTime.value))
         val alpha = fadeIn * fadeOut
         if (alpha <= 0.01f) return
 
@@ -187,8 +198,11 @@ class TargetInfoHudModule : Module() {
         val target = state.target()
         if (target != null) {
             if (target.name != lastHitName) {
+                // 换目标：重置抖动，避免沿用上一个目标的打击动画
                 lastHitName = target.name
                 lastHitHealth = target.health
+                hitNanos = 0L
+                hitPower = 0f
             } else if (target.health < lastHitHealth - 0.01f) {
                 hitNanos = now
                 hitPower = ((lastHitHealth - target.health) / 6f).coerceIn(0.35f, 1f)
@@ -258,11 +272,6 @@ class TargetInfoHudModule : Module() {
                 y = posY.value * (lh - h)
             }
         }
-        if (following) {
-            x = x.coerceIn(0f, (lw - w).coerceAtLeast(0f))
-            y = y.coerceIn(0f, (lh - h).coerceAtLeast(0f))
-        }
-
         // 跟随时不参与拖动（位置由目标决定）
         if (!platform.chatOpen || following) {
             dragging = false
@@ -289,6 +298,11 @@ class TargetInfoHudModule : Module() {
         if (shake > 0.01f) {
             x += sin(hitAge * 62f) * shake
             y += cos(hitAge * 48f) * shake * 0.35f
+        }
+        // 抖动之后再夹取：先夹后抖会把面板推出屏幕
+        if (following) {
+            x = x.coerceIn(0f, (lw - w).coerceAtLeast(0f))
+            y = y.coerceIn(0f, (lh - h).coerceAtLeast(0f))
         }
 
         val panel = LayoutBounds(x, y, w, h)

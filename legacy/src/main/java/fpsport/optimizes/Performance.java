@@ -101,7 +101,11 @@ public class Performance extends Feature {
     public static final String[] REUSE_LEVELS = {"Conservative", "Balanced", "Aggressive"};
 
     /** 设置变化后需要延迟到下一 tick 的世界刷新标记。 */
-    private static boolean pendingWorldRefresh;
+    private static volatile boolean pendingWorldRefresh;
+
+    /** 宿主可选注入：应用纹理分辨率（原实现是 {@code TextureResolution.apply()}）。不注入时只有 UI 效果。 */
+    public static Runnable textureResolutionApplier = () -> {
+    };
 
     // ---- 第二批：由宿主设置界面写入的渲染参数 ----
     /** 渲染距离（区块，0 = 跟随原版）。 */
@@ -122,6 +126,8 @@ public class Performance extends Feature {
 
     public Performance() {
         super("Performance");
+        // 构造时先算一次，避免首批区块网格烘焙时读到过期的 hidingBlocks。
+        refreshHidingBlocks();
     }
 
     @Override
@@ -156,6 +162,13 @@ public class Performance extends Feature {
         if (mc != null && hidingBlocks && mc.renderGlobal != null && mc.theWorld != null) {
             mc.renderGlobal.loadRenderers();
         }
+        // 纹理分辨率（mipmap 下限）由宿主注入，没有注入时这里是空实现。
+        textureResolutionApplier.run();
+    }
+
+    /** 宿主在设置界面改动 {@link #textureResolution} 后调用。 */
+    public static void markWorldRefreshPending() {
+        pendingWorldRefresh = true;
     }
 
     /**

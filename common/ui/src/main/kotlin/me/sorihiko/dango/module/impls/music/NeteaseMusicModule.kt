@@ -17,7 +17,7 @@ import me.sorihiko.dango.platform.Keys
 
 /**
  * 内置网易云播放器。按 Open key（默认 "."）打开播放器界面，播放自己的网易云歌单。
- * 登录：把网易云网页版的 MUSIC_U Cookie 填进 config/dangomusic/netease_cookie.txt
+ * 登录：把网易云网页版的 MUSIC_U Cookie 填进 config/Music PVP/netease_cookie.txt
  * 开着 Lyrics 模块时，会优先用这里的播放进度、歌曲 ID 和封面。
  */
 @ModuleMeta(Category.MUSIC, "NeteaseMusic")

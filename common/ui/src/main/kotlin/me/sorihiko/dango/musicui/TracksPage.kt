@@ -224,7 +224,7 @@ internal class TracksPage(private val screen: MusicScreen) {
         }
         if (list.isEmpty() && ScreenState.page == Page.LOCAL) {
             val msg = if (LocalLibrary.scanning) "正在扫描本地音乐…"
-            else "把 mp3 / wav 放进 config/dangomusic/music，再点右上角「刷新」"
+            else "把 mp3 / wav 放进 config/Music PVP/music，再点右上角「刷新」"
             ui.text(msg, body.x + 12f, body.y + 20f, 12f, Theme.TEXT_TERTIARY)
             return
         }

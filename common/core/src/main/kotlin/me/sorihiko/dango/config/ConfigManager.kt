@@ -24,7 +24,7 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 
 /**
- * 把每个模块的开关状态和 @ModuleValue 设置存到 config/dangomusic/config.json，启动时自动读回。
+ * 把每个模块的开关状态和 @ModuleValue 设置存到 config/Music PVP/config.json，启动时自动读回。
  *
  * - 设置值在启动时立刻读回；
  * - 模块开关要等着色器、字体都加载完（第 3 个 tick）再恢复，避免 onEnable 时资源还没准备好；
@@ -78,6 +78,9 @@ class ConfigManager(
                     }
                 }
             }
+            // 界面偏好（设置页分组的展开状态）和模块设置存在同一个文件里
+            (root.get("ui") as? JsonObject)?.let { UiPrefs.load(it) }
+
             pendingEnabled = enabledMap
             DangoLogger.info("Config loaded: {}", file.toString())
         } catch (e: Exception) {
@@ -113,6 +116,10 @@ class ConfigManager(
             obj.add("values", values)
             root.add(module.name, obj)
         }
+        // 界面偏好（设置页分组展开状态），与模块设置一起存盘、一起上锁
+        val ui = JsonObject()
+        UiPrefs.store(ui)
+        root.add("ui", ui)
         return gson.toJson(root)
     }
 

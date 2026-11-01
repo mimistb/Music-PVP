@@ -1,5 +1,6 @@
 package me.sorihiko.dango.legacy
 
+import fpsport.optimizes.BetterFishingRod
 import fpsport.optimizes.NoHitDelay
 import fpsport.optimizes.NoHurtCam
 import fpsport.optimizes.Performance
@@ -11,8 +12,10 @@ import fpsport.render.CustomFog
 import fpsport.render.DamageIndicator
 import fpsport.render.FireModifier
 import fpsport.render.FreeLook
+import fpsport.render.FullBright
 import fpsport.render.ItemPhysics
 import fpsport.render.MoreParticles
+import fpsport.render.MotionBlur
 import fpsport.utility.ArmorDisplay
 import fpsport.utility.AutoGG
 import fpsport.utility.AutoText
@@ -70,6 +73,14 @@ object FpsPortRuntime {
     private val betterChat = BetterChat()
     private val cpsDisplay = CPSDisplay()
 
+    /** 第三批：增强鱼竿 / 永久亮度 / 动态模糊 */
+    private val betterFishingRod = BetterFishingRod()
+    private val fullBright = FullBright()
+    private val motionBlur = MotionBlur()
+
+    /** 六个隐藏方块开关的指纹；只有变化时才重算 hidingBlocks 并请求一次区块重建 */
+    private var hidingFingerprint = ""
+
     private val specials = arrayOf("None", "Heart", "Flame", "Blood")
     private val killEffects = arrayOf("None", "Lightning", "Explosion")
 
@@ -92,8 +103,13 @@ object FpsPortRuntime {
                 moreParticles.setEnabled(false)
                 // 折叠缓存放的是上一局的聊天内容，换世界必须清掉
                 BetterChat.reset()
+                // 离开世界：Old 模式的两个乒乓 FBO 不再有用，释放掉
+                if (world == null) MotionBlur.deleteBlurBuffers()
             }
             sync(module)
+            // 第四批：反作弊 / 聊天数据 / 会话统计的参数热更新与会话心跳
+            AdninRuntime.sync(module)
+            AdninRuntime.tick(System.currentTimeMillis())
             // 点击速度：按配置窗口重算（宿主 HUD 直接读 CPSDisplay.leftCps/rightCps）
             CPSDisplay.onTick()
             publishHud(module)
@@ -205,6 +221,95 @@ object FpsPortRuntime {
         Performance.entityShadows = m.perfEntityShadows.get()
         Performance.glassQuality = m.perfGlassQuality.value.coerceIn(0, 2)
 
+        // ---------------------------------------------------------- 性能：渲染 / 实体
+        // 与原工程一致：所有子优化都必须同时满足总开关和自身开关
+        val perfOn = on && m.performance.get()
+        Performance.ignoreStands = perfOn && m.perfIgnoreStands.get()
+        Performance.fastLoad = perfOn && m.perfFastLoad.get()
+        Performance.batchModelRendering = perfOn && m.perfBatchModel.get()
+        Performance.lowAnimationTick = perfOn && m.perfLowAnimTick.get()
+        Performance.staticParticleColor = perfOn && m.perfStaticParticle.get()
+        Performance.limitChunks = perfOn && m.perfLimitChunks.get()
+        Performance.downscalePackIcons = perfOn && m.perfDownscaleIcons.get()
+        Performance.particleCulling = perfOn && m.perfParticleCulling.get()
+        Performance.cacheSkyColor = perfOn && m.perfCacheSky.get()
+        Performance.entityCulling = perfOn && m.perfEntityCulling.get()
+        Performance.cullPlayers = perfOn && m.perfCullPlayers.get()
+        Performance.cacheArmorTextures = perfOn && m.perfCacheArmorTex.get()
+        Performance.signTextCulling = perfOn && m.perfSignCulling.get()
+        Performance.blockEntityCulling = perfOn && m.perfBlockEntityCulling.get()
+        Performance.blockEntityDistance = m.perfBlockEntityDistance.value.coerceIn(8, 64)
+        Performance.customHudFont = perfOn && m.perfCustomHudFont.get()
+        Performance.customHudFontSize = m.perfCustomHudFontSize.value.coerceIn(12, 28)
+        Performance.fastRender = perfOn && m.perfFastRender.get()
+
+        // 隐藏内容：隐藏开关是在区块网格里烘焙的，只有变化时才重算并重建一次世界
+        val hideGrass = perfOn && m.perfHideGrass.get()
+        val hideDoubleGrass = perfOn && m.perfHideDoubleGrass.get()
+        val hideFlowers = perfOn && m.perfHideFlowers.get()
+        val hideDoubleFlowers = perfOn && m.perfHideDoubleFlowers.get()
+        val hideFences = perfOn && m.perfHideFences.get()
+        val hideFenceGates = perfOn && m.perfHideFenceGates.get()
+        val hideFingerprint = "$hideGrass,$hideDoubleGrass,$hideFlowers,$hideDoubleFlowers,$hideFences,$hideFenceGates"
+        if (hideFingerprint != hidingFingerprint) {
+            hidingFingerprint = hideFingerprint
+            Performance.hideTallGrass = hideGrass
+            Performance.hideDoubleTallGrass = hideDoubleGrass
+            Performance.hideFlowers = hideFlowers
+            Performance.hideDoubleTallFlowers = hideDoubleFlowers
+            Performance.hideFences = hideFences
+            Performance.hideFenceGates = hideFenceGates
+            Performance.refreshHidingBlocks()
+        }
+        // 其余隐藏项只在渲染时读取，直接写即可
+        Performance.hideSkulls = perfOn && m.perfHideSkulls.get()
+        Performance.hideArmorStands = perfOn && m.perfHideArmorStands.get()
+        Performance.hideItemFrames = perfOn && m.perfHideItemFrames.get()
+        Performance.hideMapsInItemFrames = perfOn && m.perfHideMapFrames.get()
+        Performance.hideStuckArrows = perfOn && m.perfHideStuckArrows.get()
+        Performance.hideGroundArrows = perfOn && m.perfHideGroundArrows.get()
+        Performance.hideLavaParticles = perfOn && m.perfHideLavaParticles.get()
+        Performance.hideSpawnerParticles = perfOn && m.perfHideSpawnerParticles.get()
+        Performance.hideMobInSpawner = perfOn && m.perfHideMobInSpawner.get()
+        Performance.hidePortalParticles = perfOn && m.perfHidePortalParticles.get()
+
+        // 数值 / 模式
+        Performance.particlesLimit = m.perfParticlesLimit.value.coerceIn(0, 2000)
+        Performance.chunkUpdateLimit = m.perfChunkUpdateLimit.value.coerceIn(1, 250)
+        Performance.entityCullingInterval = m.perfEntityCullingInterval.value.coerceIn(10, 500)
+        Performance.entityCullingMinEntities = m.perfEntityCullingMin.value.coerceIn(0, 256)
+        Performance.playerRenderDistance = m.perfPlayerDist.value.coerceIn(0.1f, 1f).toDouble()
+        Performance.passiveRenderDistance = m.perfPassiveDist.value.coerceIn(0.1f, 1f).toDouble()
+        Performance.hostileRenderDistance = m.perfHostileDist.value.coerceIn(0.1f, 1f).toDouble()
+        Performance.miscRenderDistance = m.perfMiscDist.value.coerceIn(0.1f, 1f).toDouble()
+        Performance.reuseVisibleChunks = perfOn && m.perfReuseChunks.get()
+        Performance.reuseVisibleChunksLevel = m.perfReuseLevel.value.coerceIn(0, 2)
+        Performance.adaptiveChunkBudget = perfOn && m.perfAdaptiveChunk.get()
+        Performance.composedModelTransform = perfOn && m.perfComposedModel.get()
+        Performance.batchVanillaFont = perfOn && m.perfBatchVanillaFont.get()
+        Performance.fastGlyphLookup = perfOn && m.perfFastGlyph.get()
+        Performance.slowObfuscation = perfOn && m.perfSlowObfuscation.get()
+        Performance.mergeTextShadow = perfOn && m.perfMergeShadow.get()
+        Performance.cacheItemModels = perfOn && m.perfCacheItemModels.get()
+        Performance.fastCollision = perfOn && m.perfFastCollision.get()
+        Performance.fastTextureUpload = perfOn && m.perfFastTextureUpload.get()
+        // 贴图分辨率：改动后延迟到下一 tick 由 textureResolutionApplier 应用
+        val textureResolution = m.perfTextureResolution.value.coerceIn(0, 4)
+        if (textureResolution != Performance.textureResolution) {
+            Performance.textureResolution = textureResolution
+            Performance.markWorldRefreshPending()
+        }
+
+        // ---------------------------------------------------------- 第三批
+        betterFishingRod.setEnabled(on && m.betterFishingRod.get())
+        BetterFishingRod.stringWidth = BetterFishingRod.clampStringWidth(m.rodStringWidth.value)
+
+        fullBright.setEnabled(on && m.fullBright.get())
+
+        motionBlur.setEnabled(on && m.motionBlur.get())
+        MotionBlur.mode = m.mbMode.value.coerceIn(MotionBlur.MODE_OLD, MotionBlur.MODE_NEW)
+        MotionBlur.clampStrength(m.mbStrength.value)
+
         // ---------------------------------------------------------- 第二批
         cleanView.setEnabled(on && m.cleanView.get())
 
@@ -230,6 +335,7 @@ object FpsPortRuntime {
         BetterChat.copyMessage = m.chatCopy.get()
         BetterChat.minCopyLength = m.chatMinLength.value.coerceIn(0, 32)
         BetterChat.foldActionBar = m.chatFoldActionBar.get()
+        BetterChat.opacity = m.chatOpacity.value.coerceIn(0, 100)
 
         // 只计数、不画任何东西；数据由 publishHud 送进信息胶囊
         CPSDisplay.windowMs = m.cpsWindow.value.coerceIn(200, 5000)
@@ -324,12 +430,25 @@ object FpsPortRuntime {
 
     fun onRender3D(partialTicks: Float) {
         try {
+            // 永久亮度：每帧重写 gamma，防光影 / 资源包自己改回去
+            FullBright.onUpdate()
             if (mc.theWorld == null) return
             damageIndicator.onRender3D()
             BlockOverlay.onRender3D()
             Performance.applyFpsLimit()
         } catch (t: Throwable) {
             DangoLogger.error("Dango Music fps render failed: {}", t)
+        }
+    }
+
+    /** HUD 全部画完之后：动态模糊（Old 帧混合 / New 后处理）都在这里叠加 */
+    fun onRenderOverlay() {
+        try {
+            // onRenderOverlay 本身不判开关，关闭时绝不能画
+            if (!motionBlur.isEnabled()) return
+            motionBlur.onRenderOverlay()
+        } catch (t: Throwable) {
+            DangoLogger.error("Dango Music motion blur failed: {}", t)
         }
     }
 
@@ -395,6 +514,10 @@ object FpsPortRuntime {
 
     fun onChat(event: ClientChatReceivedEvent) {
         try {
+            // 聊天数据模块先收；动作栏（type 2）不进历史，避免刷屏
+            if (event.type != 2.toByte()) {
+                AdninRuntime.onChat(event.message?.unformattedText, System.currentTimeMillis())
+            }
             if (!autoGG.isEnabled()) return
             // 没有网络包回调，用聊天组件合成一个 S02PacketChat 复用原逻辑
             autoGG.onPacket(true, S02PacketChat(event.message))

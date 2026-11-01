@@ -28,7 +28,7 @@ import kotlin.math.abs
 @ModuleMeta(Category.MUSIC, "AutoLyrics")
 class AutoLyricsModule : Module() {
 
-    @ModuleValue("本地歌词", "在 config/dangomusic/lyrics 里找同名 .lrc 文件")
+    @ModuleValue("本地歌词", "在 config/Music PVP/lyrics 里找同名 .lrc 文件")
     private val localLrc = BooleanValue(true)
 
     @ModuleValue("联网匹配", "本地没有时，按歌名和歌手搜索网易云并取最接近的歌词")

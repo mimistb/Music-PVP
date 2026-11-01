@@ -16,7 +16,7 @@ import java.nio.file.Path
 /** 1.8.9 的游戏接口。键码本来就是 LWJGL 2 的，不用转换 */
 object LegacyPlatform : Platform {
 
-    override val configDir: Path get() = mc.mcDataDir.toPath().resolve("config").resolve(DangoMusic.MOD_ID)
+    override val configDir: Path get() = mc.mcDataDir.toPath().resolve("config").resolve(DangoMusic.CONFIG_DIR)
 
     override val playerName: String get() = mc.session.username
 

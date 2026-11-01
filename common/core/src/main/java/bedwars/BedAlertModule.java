@@ -103,8 +103,13 @@ public final class BedAlertModule {
         }
         matchState = state;
 
+        // 比赛确认通常晚于出生点：在未确认阶段持续尝试记录锚点，内部只保留第一次。
+        if (!state.matchActive) {
+            ownBedTracker.recordAnchor(input.playerX, input.playerY, input.playerZ);
+        }
+
         ownBed = ownBedTracker.update(state.matchActive, state.ownTeam,
-                input.beds, input.playerX, input.playerZ);
+                input.beds, input.playerX, input.playerZ, input.ownBedProbe);
 
         // 名单是威胁判定的权威来源：只有比赛确认后才累积。
         final List<PlayerIdentity> published = rosterBook.update(input.roster, state.matchActive);

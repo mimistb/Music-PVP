@@ -55,7 +55,6 @@ public final class MatchTracker {
     private Team ownTeam = Team.UNKNOWN;
     private Team candidateTeam = Team.UNKNOWN;
     private int stableSamples;
-    private int missingCount;
 
     public boolean isMatchActive() {
         return matchActive;
@@ -71,7 +70,6 @@ public final class MatchTracker {
         ownTeam = Team.UNKNOWN;
         candidateTeam = Team.UNKNOWN;
         stableSamples = 0;
-        missingCount = 0;
     }
 
     /**
@@ -174,7 +172,6 @@ public final class MatchTracker {
         boolean justActivated = false;
         boolean justDeactivated = false;
         if (evidenceValid) {
-            missingCount = 0;
             if (candidate == candidateTeam) {
                 if (stableSamples < 255) stableSamples++;
             } else {
@@ -194,9 +191,7 @@ public final class MatchTracker {
             if (matchActive && relaxed && !ownTeam.known() && candidate.known()) {
                 ownTeam = candidate;
             }
-        } else if (matchActive) {
-            if (missingCount < 255) missingCount++;
-        } else {
+        } else if (!matchActive) {
             candidateTeam = Team.UNKNOWN;
             stableSamples = 0;
         }

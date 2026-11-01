@@ -271,8 +271,9 @@ class MusicScreen(
             login.mouseClicked(mx, my, mouseButton)
             return
         }
-        // 鼠标侧键 / 右键：返回上一页
+        // 鼠标侧键 / 右键：设置页的分组标题栏 = 展开 / 收起参数栏；其它位置返回上一页
         if (mouseButton == 1 || mouseButton == 3) {
+            if (ScreenState.page == Page.SETTINGS && settings.mouseRightClicked(mx, my)) return
             goBack()
             return
         }

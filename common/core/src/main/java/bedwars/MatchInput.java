@@ -29,6 +29,11 @@ public final class MatchInput {
     public double playerZ;
     /** 当前扫描到的床；null 表示世界/扫描器暂不可用。 */
     public List<BedMarker> beds;
+    /**
+     * 宿主对“上一次已锁定的自己床坐标”的直接探测结果，见 {@link OwnBedTracker} 的 PROBE_* 常量。
+     * 探测能精确判断床是否被拆（含玩家远离扫描范围的情况），不填则退回保守判据。
+     */
+    public int ownBedProbe = OwnBedTracker.PROBE_NONE;
     /** 场上实体（只填玩家即可）。 */
     public List<ThreatEntity> entities;
 }

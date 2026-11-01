@@ -76,6 +76,18 @@ class ForgeBridge {
         }
     }
 
+    /**
+     * HUD 全部画完之后叠加动态模糊。
+     *
+     * GuiIngameForge#renderGameOverlay 末尾除了 ALL 还会派发一次，等价于原客户端的
+     * renderGameOverlay RETURN 处；Old / New 两种模式都走这里。
+     */
+    @SubscribeEvent
+    fun onRenderGameOverlayPost(e: RenderGameOverlayEvent.Post) {
+        if (e.type != RenderGameOverlayEvent.ElementType.ALL) return
+        FpsPortRuntime.onRenderOverlay()
+    }
+
     // ---------------------------------------------------------------- PVP 工具
 
     @SubscribeEvent
