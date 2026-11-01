@@ -44,6 +44,71 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
 
     private enum class Ctl { TOGGLE, SLIDER, SWATCH, KEY, TEXT }
 
+    /**
+     * 设置页统一栅格：卡片、行、控件、段标题、页签全部按这套尺寸排布，避免各处散落的魔数。
+     * 横向：内容左缘贴 page.x（与页面标题同一条基准线），右侧留 [RIGHT_GUTTER] 给滚动条；
+     * 卡片内左右统一 [CARD_PAD]，卡片标题、行标签、行分隔线都从这条线起始；控件一律右对齐到卡片内容右缘。
+     * 纵向：卡片标题栏与每行同高（[HEAD_H] / [ROW_H]），行内控件按行中线居中，卡片底部留 [CARD_BOTTOM]。
+     */
+    private object Metrics {
+        /** 内容区右侧留给滚动条的余量 */
+        const val RIGHT_GUTTER = 12f
+        /** 卡片内左右内边距 */
+        const val CARD_PAD = 14f
+        /** 卡片标题栏高度（与行高一致，纵向节奏统一） */
+        const val HEAD_H = 40f
+        /** 每行（标签 + 描述 + 控件）的高度 */
+        const val ROW_H = 40f
+        /** 卡片底部留白 */
+        const val CARD_BOTTOM = 8f
+        /** 同列相邻卡片间距 */
+        const val CARD_GAP = 14f
+        /** 段与段之间的间距（比卡片间距大一档，形成层次） */
+        const val SECTION_GAP = 20f
+        /** 段标题高度：段名 + 通栏分隔线 + 与首张卡片的空隙 */
+        const val SECTION_H = 34f
+        /** 行内标签与描述的中线间距 */
+        const val LINE_GAP = 15f
+        /** 标签列与控件列之间至少留出的空隙 */
+        const val LABEL_GAP = 14f
+        /** 卡片标题与副标题之间的空隙 */
+        const val TITLE_GAP = 8f
+        /** 卡片标题右侧总开关与「右键展开」提示之间的空隙 */
+        const val HEAD_ACTION_GAP = 8f
+        /** 滚动条宽度 */
+        const val SCROLLBAR_W = 4f
+        /** 页面标题块：副标题相对标题的偏移、标题块整体占据的高度 */
+        const val HEADER_SUB_Y = 30f
+        const val HEADER_H = 54f
+
+        // 页签
+        const val TAB_W = 104f
+        const val TAB_H = 32f
+        const val TAB_PAD = 4f
+        const val TAB_RADIUS = 8f
+
+        // 控件
+        const val TOGGLE_W = 34f
+        const val TOGGLE_H = 20f
+        const val KEY_W = 72f
+        const val KEY_H = 24f
+        const val FIELD_W = 166f
+        const val FIELD_H = 22f
+        const val FIELD_RADIUS = 6f
+        /** 输入框内文字与左右边缘的距离 */
+        const val FIELD_INSET = 7f
+        /** 滑条槽 = 轨道 + 空隙 + 数值框（110 + 10 + 46），右缘与其它控件贴齐 */
+        const val SLIDER_W = 166f
+        const val SLIDER_TRACK_W = 110f
+        const val SLIDER_VALUE_W = 46f
+        const val SLIDER_VALUE_GAP = 10f
+        const val SWATCH = 16f
+        const val SWATCH_GAP = 8f
+
+        /** 文字视觉中线与其 y 参数的换算（MixedText 以 0.39 × 字号作为中线偏移） */
+        fun textY(centerY: Float, size: Float) = centerY - size * 0.39f
+    }
+
     /** scale：显示值 = 实际值 × scale（百分比的选项是 100），手动输入时按显示值换算回去 */
     private class Row(
         val key: String, val label: String, val desc: String, val value: Any, val ctl: Ctl,
@@ -104,9 +169,6 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
     }
 
     private val tabs: List<List<Group>> by lazy { buildSettings() }
-
-    /** 段标题占用的高度：粗体段名 + 通栏分隔线 + 与卡片之间的空隙 */
-    private val sectionH = 34f
 
     /** 本帧画了设置列表的区域（滚轮用），没画就是空的 */
     var area = LayoutBounds()
@@ -640,22 +702,27 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
     fun draw(page: LayoutBounds) {
         ui.headerAnim {
             ui.text("设置", page.x, page.y, 22f, Theme.TEXT_PRIMARY, Theme.FONT_DISPLAY)
-            ui.text("修改即时生效并自动保存", page.x, page.y + 30f, 11f, Theme.TEXT_SECONDARY, Theme.FONT_SEMIBOLD)
+            ui.text("修改即时生效并自动保存", page.x, page.y + Metrics.HEADER_SUB_Y, 11f, Theme.TEXT_SECONDARY, Theme.FONT_SEMIBOLD)
             drawTabs(page)
         }
 
-        val view = LayoutBounds(page.x, page.y + 54f, page.width, page.bottom - (page.y + 54f))
+        val view = LayoutBounds(
+            page.x, page.y + Metrics.HEADER_H, page.width,
+            page.bottom - (page.y + Metrics.HEADER_H),
+        )
         area = view
         val groups = tabs[ScreenState.settingsTab.coerceIn(0, tabs.size - 1)]
 
         // 按段分组：每段先画一条占满整行的段标题，段内再按两列瀑布流排卡片。
         // 不同分工的模块不会并排混在一起，段与段之间有明确的分割。
-        val gap = 14f
-        val sectionGap = 20f
-        val rowH = 40f
-        val headH = 36f
-        val cols = if (view.width >= 560f) 2 else 1
-        val colW = (view.width - 12f - gap * (cols - 1)) / cols
+        val gap = Metrics.CARD_GAP
+        val sectionGap = Metrics.SECTION_GAP
+        val rowH = Metrics.ROW_H
+        val headH = Metrics.HEAD_H
+        // 内容右缘统一让出滚动条余量，左缘与页面标题共用 page.x 这条基准线
+        val frameW = (view.width - Metrics.RIGHT_GUTTER).coerceAtLeast(0f)
+        val cols = if (frameW >= 560f) 2 else 1
+        val colW = (frameW - gap * (cols - 1)) / cols
 
         val sectionNames = mutableListOf<String>()
         val sectionGroups = mutableListOf<MutableList<Group>>()
@@ -675,13 +742,13 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
         var y = 0f
         for (si in sectionGroups.indices) {
             sectionTop[si] = y
-            if (sectionNames[si].isNotEmpty()) y += sectionH
+            if (sectionNames[si].isNotEmpty()) y += Metrics.SECTION_H
             val colY = FloatArray(cols)
             var idx = 0
             for (g in sectionGroups[si]) {
                 // 卡片高度跟着展开进度变化：收起时只剩标题栏
                 val open = groupProgress(groupKey(g))
-                val h = headH + g.rows.size * rowH * open + 6f
+                val h = headH + g.rows.size * rowH * open + Metrics.CARD_BOTTOM
                 // 列固定轮转：动画过程中列不会被重排，卡片不会横向跳
                 val c = idx % cols
                 placed += Placed(g, c, y + colY[c], h, open)
@@ -701,7 +768,7 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
         for (si in sectionGroups.indices) {
             val top = sectionTop[si]
             if (sectionNames[si].isNotEmpty()) {
-                val hb = LayoutBounds(view.x, view.y + top - pos, view.width, sectionH)
+                val hb = LayoutBounds(view.x, view.y + top - pos, frameW, Metrics.SECTION_H)
                 if (hb.bottom >= view.y && hb.y <= view.bottom) drawSectionHeader(hb, sectionNames[si])
             }
             for (g in sectionGroups[si]) {
@@ -713,26 +780,36 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
         }
         ui.endClip()
 
-        // 滚动条（只显示位置）
+        // 滚动条（只显示位置）：画在右侧留白里，不与卡片重叠
         if (maxScroll > 0f && contentH > 0f) {
             val th = max(30f, view.height * view.height / contentH)
             val ty = view.y + (view.height - th) * (pos / maxScroll)
-            ui.ctx.drawShape(LayoutBounds(view.right - 4f, ty, 4f, th), ShapeStyle(Color(1f, 1f, 1f, 0.30f), 2f))
+            ui.ctx.drawShape(
+                LayoutBounds(view.right - Metrics.SCROLLBAR_W, ty, Metrics.SCROLLBAR_W, th),
+                ShapeStyle(Color(1f, 1f, 1f, 0.30f), Metrics.SCROLLBAR_W / 2f),
+            )
         }
     }
 
-    /** 标签：Lyrics / Music & HUD */
+    /** 标签：Lyrics / Music & HUD；右缘与内容区对齐，竖直方向与标题块居中 */
     private fun drawTabs(page: LayoutBounds) {
         val names = listOf("歌词", "音乐与 HUD")
-        val tabW = 104f
-        val bar = LayoutBounds(page.right - tabW * names.size - 8f, page.y + 2f, tabW * names.size + 8f, 32f)
+        val barW = Metrics.TAB_W * names.size + Metrics.TAB_PAD * 2
+        val bar = LayoutBounds(
+            page.right - Metrics.RIGHT_GUTTER - barW, page.y + Metrics.TAB_PAD,
+            barW, Metrics.TAB_H,
+        )
         ui.card(bar, Theme.CARD, 11f)
         names.forEachIndexed { i, n ->
-            val b = LayoutBounds(bar.x + 4f + i * tabW, bar.y + 4f, tabW, 24f)
+            val b = LayoutBounds(
+                bar.x + Metrics.TAB_PAD + i * Metrics.TAB_W, bar.y + Metrics.TAB_PAD,
+                Metrics.TAB_W, Metrics.TAB_H - Metrics.TAB_PAD * 2,
+            )
             val on = i == ScreenState.settingsTab
-            if (on) ui.ctx.drawShape(b, ShapeStyle(RED, 8f)) else if (ui.hover(b)) ui.card(b, Theme.CARD_HOVER, 8f)
+            if (on) ui.ctx.drawShape(b, ShapeStyle(RED, Metrics.TAB_RADIUS))
+            else if (ui.hover(b)) ui.card(b, Theme.CARD_HOVER, Metrics.TAB_RADIUS)
             val w = ui.width(n, 12f, Theme.FONT_SEMIBOLD)
-            ui.text(n, b.x + (b.width - w) / 2f, b.y + 12f - 12f * 0.39f - 0.5f, 12f,
+            ui.text(n, b.x + (b.width - w) / 2f, Metrics.textY(b.y + b.height / 2f, 12f) - 0.5f, 12f,
                 if (on) Theme.TEXT_PRIMARY else Theme.TEXT_SECONDARY, Theme.FONT_SEMIBOLD)
             ui.hits += b to {
                 if (ScreenState.settingsTab != i) {
@@ -744,13 +821,14 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
         }
     }
 
-    /** 段标题：红色小竖条 + 13 px 粗体段名 + 通栏分隔线，让不同分工的模块一眼分开 */
+    /** 段标题：红色小竖条 + 13 px 粗体段名 + 通栏分隔线；段名与卡片标题共用同一条左基准线 */
     private fun drawSectionHeader(b: LayoutBounds, title: String) {
-        ui.ctx.drawShape(LayoutBounds(b.x, b.y + 8f, 3f, 15f), ShapeStyle(RED, 1.5f))
-        ui.text(title, b.x + 11f, b.y + 8f, 13f, Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD)
-        val lx = b.x + 11f + ui.width(title, 13f, Theme.FONT_SEMIBOLD) + 12f
-        if (b.right - 4f > lx) {
-            ui.ctx.drawShape(LayoutBounds(lx, b.y + 15f, b.right - 4f - lx, 1f), ShapeStyle(Color(1f, 1f, 1f, 0.16f)))
+        val cy = b.y + Metrics.SECTION_H / 2f
+        ui.ctx.drawShape(LayoutBounds(b.x, cy - 7.5f, 3f, 15f), ShapeStyle(RED, 1.5f))
+        ui.text(title, b.x + Metrics.CARD_PAD, Metrics.textY(cy, 13f), 13f, Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD)
+        val lx = b.x + Metrics.CARD_PAD + ui.width(title, 13f, Theme.FONT_SEMIBOLD) + 12f
+        if (b.right > lx) {
+            ui.ctx.drawShape(LayoutBounds(lx, cy - 0.5f, b.right - lx, 1f), ShapeStyle(Color(1f, 1f, 1f, 0.16f)))
         }
     }
 
@@ -758,12 +836,20 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
         val ctx = ui.ctx
         // 每张卡片加一圈很淡的描边，和相邻模块区分开
         ctx.drawShape(b, ShapeStyle(Color(1f, 1f, 1f, 0.05f), 14f, 1f, Color(1f, 1f, 1f, 0.07f)))
-        val x = b.x + 14f
-        val iw = b.width - 28f
-        ui.text(g.title, x, b.y + 13f, 13f, Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD)
-        ui.text(g.sub, x + ui.width(g.title, 13f, Theme.FONT_SEMIBOLD) + 8f, b.y + 14.5f, 10f, Theme.TEXT_TERTIARY)
+        val x = b.x + Metrics.CARD_PAD
+        val iw = b.width - Metrics.CARD_PAD * 2
+        // 标题栏内部元素统一按标题栏中线居中
+        val headCy = b.y + headH / 2f
+        ui.text(g.title, x, Metrics.textY(headCy, 13f), 13f, Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD)
+        ui.text(
+            g.sub, x + ui.width(g.title, 13f, Theme.FONT_SEMIBOLD) + Metrics.TITLE_GAP,
+            Metrics.textY(headCy, 10f), 10f, Theme.TEXT_TERTIARY,
+        )
         if (g.toggle) {
-            val box = LayoutBounds(b.right - 14f - 34f, b.y + 9f, 34f, 20f)
+            val box = LayoutBounds(
+                b.right - Metrics.CARD_PAD - Metrics.TOGGLE_W, headCy - Metrics.TOGGLE_H / 2f,
+                Metrics.TOGGLE_W, Metrics.TOGGLE_H,
+            )
             val v = g.toggleValue
             if (v != null) {
                 ui.toggleSwitch(box, v.get(), clip) { v.toggle() }
@@ -772,18 +858,19 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
                 ui.toggleSwitch(box, m.enabled, clip) { m.enabled = !m.enabled }
             }
         }
-        // 收起时提示一下操作方式（右键）
+        // 收起时提示一下操作方式（右键）；右缘与总开关保持固定间距
         if (open <= 0.001f) {
             val hint = "右键展开"
             val hw = ui.width(hint, 9.5f)
-            ui.text(hint, b.right - 14f - hw - (if (g.toggle) 42f else 0f), b.y + 13.5f, 9.5f, Theme.TEXT_TERTIARY)
+            val actionW = if (g.toggle) Metrics.TOGGLE_W + Metrics.HEAD_ACTION_GAP else 0f
+            ui.text(hint, b.right - Metrics.CARD_PAD - actionW - hw, Metrics.textY(headCy, 9.5f), 9.5f, Theme.TEXT_TERTIARY)
         }
         // 整个标题栏都算右键区域，没有盲区
         rightHits += LayoutBounds(b.x, b.y, b.width, headH).intersect(clip) to { toggleGroup(groupKey(g)) }
 
         if (open <= 0.001f) return
         val bodyTop = b.y + headH
-        val bodyH = b.height - headH - 6f
+        val bodyH = b.height - headH - Metrics.CARD_BOTTOM
         if (bodyH <= 0f) return
         // 动画期间只显示已经"长出来"的部分；裁剪要跟着入场位移，避免错位
         val bodyClip = LayoutBounds(
@@ -807,32 +894,43 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
     }
 
     private fun drawRow(b: LayoutBounds, r: Row, clip: LayoutBounds) {
+        // 控件槽宽度按类型不同，但右缘统一贴齐卡片内容右缘；标签列据此让出 [LABEL_GAP]
         val ctlW = when (r.ctl) {
-            Ctl.TOGGLE -> 34f
-            Ctl.SLIDER -> 166f
+            Ctl.TOGGLE -> Metrics.TOGGLE_W
+            Ctl.SLIDER -> Metrics.SLIDER_W
             Ctl.SWATCH -> {
                 val n = swatchesFor(r.key).size
-                16f * n + 8f * (n - 1)
+                Metrics.SWATCH * n + Metrics.SWATCH_GAP * (n - 1)
             }
-            Ctl.KEY -> 72f
-            Ctl.TEXT -> 166f
+            Ctl.KEY -> Metrics.KEY_W
+            Ctl.TEXT -> Metrics.FIELD_W
         }
-        val textW = b.width - ctlW - 14f
-        ui.text(ui.trim(r.label, textW, 12f, Theme.FONT_MEDIUM), b.x, b.y + 8f, 12f, Theme.TEXT_PRIMARY, Theme.FONT_MEDIUM)
-        if (r.desc.isNotEmpty()) ui.text(ui.trim(r.desc, textW, 9.5f), b.x, b.y + 24f, 9.5f, Theme.TEXT_TERTIARY)
+        val textW = b.width - ctlW - Metrics.LABEL_GAP
         val cy = b.y + b.height / 2f
+        // 有描述时两行文案整体按行中线居中；没有描述时标签单独居中对齐，避免文字偏高
+        val labelCy = if (r.desc.isEmpty()) cy else cy - Metrics.LINE_GAP / 2f
+        ui.text(ui.trim(r.label, textW, 12f, Theme.FONT_MEDIUM), b.x, Metrics.textY(labelCy, 12f), 12f, Theme.TEXT_PRIMARY, Theme.FONT_MEDIUM)
+        if (r.desc.isNotEmpty()) {
+            ui.text(ui.trim(r.desc, textW, 9.5f), b.x, Metrics.textY(cy + Metrics.LINE_GAP / 2f, 9.5f), 9.5f, Theme.TEXT_TERTIARY)
+        }
         val cx = b.right - ctlW
         when (r.ctl) {
             Ctl.TOGGLE -> {
                 val v = r.value as BooleanValue
-                ui.toggleSwitch(LayoutBounds(cx, cy - 10f, 34f, 20f), v.get(), clip) { v.toggle() }
+                ui.toggleSwitch(
+                    LayoutBounds(cx, cy - Metrics.TOGGLE_H / 2f, Metrics.TOGGLE_W, Metrics.TOGGLE_H),
+                    v.get(), clip,
+                ) { v.toggle() }
             }
-            Ctl.SLIDER -> drawSlider(b, r, clip, cx, cy)
+            Ctl.SLIDER -> drawSlider(r, clip, cx, cy)
             Ctl.SWATCH -> {
                 val v = r.value as IntValue
                 swatchesFor(r.key).forEachIndexed { i, col ->
                     if (i > v.maxRange) return@forEachIndexed
-                    val sb = LayoutBounds(cx + i * 24f, cy - 8f, 16f, 16f)
+                    val sb = LayoutBounds(
+                        cx + i * (Metrics.SWATCH + Metrics.SWATCH_GAP), cy - Metrics.SWATCH / 2f,
+                        Metrics.SWATCH, Metrics.SWATCH,
+                    )
                     if (v.value == i) ui.ctx.drawShape(sb.expand(3f, 3f), ShapeStyle(Color(0f, 0f, 0f, 0f), 11f, 1.5f, Theme.TEXT_PRIMARY))
                     ui.ctx.drawShape(sb, ShapeStyle(col, 8f))
                     // 黑色 / 深色色块在深色卡片上会看不见，补一圈浅描边
@@ -851,14 +949,14 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
     private fun drawTextField(r: Row, clip: LayoutBounds, cx: Float, cy: Float) {
         val ctx = ui.ctx
         val value = r.value as StringValue
-        val box = LayoutBounds(cx, cy - 11f, 166f, 22f)
+        val box = LayoutBounds(cx, cy - Metrics.FIELD_H / 2f, Metrics.FIELD_W, Metrics.FIELD_H)
         val editing = editRow === r
         val text: String
         val color: Color
         if (editing) {
             editRect = box
-            ui.card(box, Theme.CARD_HOVER, 6f)
-            ctx.drawShape(box, ShapeStyle(Color(0f, 0f, 0f, 0f), 6f, 1f, RED))
+            ui.card(box, Theme.CARD_HOVER, Metrics.FIELD_RADIUS)
+            ctx.drawShape(box, ShapeStyle(Color(0f, 0f, 0f, 0f), Metrics.FIELD_RADIUS, 1f, RED))
             text = edit.display(caretVisible(), if (r.secret) '•' else null)
             color = Theme.TEXT_PRIMARY
         } else {
@@ -869,16 +967,17 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
                 else -> raw
             }
             color = if (raw.isEmpty()) Theme.TEXT_TERTIARY else Theme.TEXT_SECONDARY
-            ui.card(box, Theme.CARD, 6f)
+            ui.card(box, Theme.CARD, Metrics.FIELD_RADIUS)
         }
-        val shown = ui.trim(text, box.width - 14f, 11f, Theme.FONT_SEMIBOLD)
-        ui.text(shown, box.x + 7f, cy - 11f * 0.39f - 0.5f, 11f, color, Theme.FONT_SEMIBOLD)
+        val shown = ui.trim(text, box.width - Metrics.FIELD_INSET * 2f, 11f, Theme.FONT_SEMIBOLD)
+        ui.text(shown, box.x + Metrics.FIELD_INSET, Metrics.textY(cy, 11f) - 0.5f, 11f, color, Theme.FONT_SEMIBOLD)
         ui.hits += box.intersect(clip) to { startEdit(r) }
     }
 
-    private fun drawSlider(b: LayoutBounds, r: Row, clip: LayoutBounds, cx: Float, cy: Float) {
+    private fun drawSlider(r: Row, clip: LayoutBounds, cx: Float, cy: Float) {
         val ctx = ui.ctx
-        val track = LayoutBounds(cx + 2f, cy - 2f, 108f, 4f)
+        // 槽内固定三段：轨道 → 空隙 → 数值框，右缘与其它控件贴齐
+        val track = LayoutBounds(cx, cy - 2f, Metrics.SLIDER_TRACK_W, 4f)
         val p = when (val v = r.value) {
             is IntValue -> v.normalize()
             is FloatValue -> v.normalize()
@@ -890,20 +989,30 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
         ctx.drawShape(LayoutBounds(track.x, track.y, track.width * p, track.height), ShapeStyle(RED, 2f))
         val k = if (active || ui.hover(track.expand(6f, 10f))) 14f else 11f
         ctx.drawShape(LayoutBounds(track.x + track.width * p - k / 2f, cy - k / 2f, k, k), ShapeStyle(Color(1f, 1f, 1f, 1f), k / 2f))
-        // 数值：点一下可以直接输入
-        val vb = LayoutBounds(b.right - 46f, cy - 10f, 46f, 20f)
+        // 数值：点一下可以直接输入；文字始终右对齐在固定数值框内，不随 hover 位移
+        val vb = LayoutBounds(
+            cx + Metrics.SLIDER_TRACK_W + Metrics.SLIDER_VALUE_GAP,
+            cy - Metrics.FIELD_H / 2f, Metrics.SLIDER_VALUE_W, Metrics.FIELD_H,
+        )
         if (editRow === r) {
             editRect = vb
-            ui.card(vb, Theme.CARD_HOVER, 6f)
-            ctx.drawShape(vb, ShapeStyle(Color(0f, 0f, 0f, 0f), 6f, 1f, RED))
+            ui.card(vb, Theme.CARD_HOVER, Metrics.FIELD_RADIUS)
+            ctx.drawShape(vb, ShapeStyle(Color(0f, 0f, 0f, 0f), Metrics.FIELD_RADIUS, 1f, RED))
             val et = edit.display(caretVisible())
-            ui.text(et, vb.right - 6f - ui.width(et, 11f, Theme.FONT_SEMIBOLD), cy - 11f * 0.39f - 0.5f, 11f, Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD)
+            ui.text(
+                et, vb.right - 6f - ui.width(et, 11f, Theme.FONT_SEMIBOLD), Metrics.textY(cy, 11f) - 0.5f,
+                11f, Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD,
+            )
         } else {
+            // 数值文字右缘固定在数值框内，hover 只换底色，不改变文字位置
             val s = r.fmt(r.value)
             val sw = ui.width(s, 11f, Theme.FONT_SEMIBOLD)
             val hot = ui.hover(vb)
-            if (hot) ui.card(LayoutBounds(b.right - sw - 6f, cy - 10f, sw + 6f, 20f), Theme.CARD_HOVER, 6f)
-            ui.text(s, b.right - sw - (if (hot) 3f else 0f), cy - 11f * 0.39f - 0.5f, 11f,
+            if (hot) {
+                val pw = max(vb.width, sw + 12f)
+                ui.card(LayoutBounds(vb.right - pw, vb.y, pw, vb.height), Theme.CARD_HOVER, Metrics.FIELD_RADIUS)
+            }
+            ui.text(s, vb.right - 6f - sw, Metrics.textY(cy, 11f) - 0.5f, 11f,
                 if (active) RED else if (hot) Theme.TEXT_PRIMARY else Theme.TEXT_SECONDARY, Theme.FONT_SEMIBOLD)
         }
         ui.hits += vb.intersect(clip) to { startEdit(r) }
@@ -915,7 +1024,7 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
     }
 
     private fun drawKeyButton(v: IntValue, clip: LayoutBounds, cx: Float, cy: Float) {
-        val kb = LayoutBounds(cx, cy - 12f, 72f, 24f)
+        val kb = LayoutBounds(cx, cy - Metrics.KEY_H / 2f, Metrics.KEY_W, Metrics.KEY_H)
         val binding = bindingKey === v
         ui.card(kb, if (binding) RED.copy(a = 0.22f) else if (ui.hover(kb)) Theme.CARD_HOVER else Theme.CARD, 7f)
         if (binding) ui.ctx.drawShape(kb, ShapeStyle(Color(0f, 0f, 0f, 0f), 7f, 1f, RED))
@@ -925,7 +1034,7 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
             else -> Keys.name(v.value) ?: "#${v.value}"
         }
         val s = ui.trim(name, kb.width - 10f, 11f, Theme.FONT_SEMIBOLD)
-        ui.text(s, kb.x + (kb.width - ui.width(s, 11f, Theme.FONT_SEMIBOLD)) / 2f, cy - 11f * 0.39f - 0.5f, 11f,
+        ui.text(s, kb.x + (kb.width - ui.width(s, 11f, Theme.FONT_SEMIBOLD)) / 2f, Metrics.textY(cy, 11f) - 0.5f, 11f,
             if (binding) RED else if (v.value == 0) Theme.TEXT_TERTIARY else Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD)
         val hb = kb.intersect(clip)
         keyButtons += hb
