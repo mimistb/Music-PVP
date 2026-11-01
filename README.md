@@ -1,10 +1,10 @@
-<p align="center"><img src="docs/banner.png" alt="Dango Music" width="640"></p>
+<p align="center"><img src="docs/banner.png" alt="Music PVP" width="640"></p>
 
-# Dango Music
+# Music PVP
 
-在 Minecraft 里听网易云音乐的 mod（1.8.9 Forge / 1.20.1 Fabric · Forge / 1.21.1 · 1.21.11 · 26.2 · 26.3 Fabric · NeoForge）：液态玻璃风格的播放器、漂浮在世界里的 3D 歌词、Song card、灵动岛，还能和朋友一起听歌。
+在 Minecraft 里听网易云音乐的 mod（1.8.9 Forge）：液态玻璃风格的PVP客户端
 
-*A Minecraft mod (1.8.9 Forge / 1.20.1 Fabric & Forge / 1.21.1, 1.21.11, 26.2 & 26.3 Fabric & NeoForge) that brings a NetEase Cloud Music player into Minecraft — liquid-glass UI, 3D in-world lyrics, a song card HUD, a Dynamic Island and Listen Together.*
+*A Minecraft mod (1.8.9 Forge) that brings a NetEase Cloud Music player into Minecraft — liquid-glass UI, 3D in-world lyrics, a song card HUD, a Dynamic Island and Listen Together.*
 
 ## 截图
 
