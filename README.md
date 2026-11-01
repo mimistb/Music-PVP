@@ -1,6 +1,6 @@
 <p align="center"><img src="docs/banner.png" alt="Music PVP" width="640"></p>
 
-# Music PVP
+# Music PVP (DangMusic魔改)
 
 在 Minecraft 里听网易云音乐的 mod（1.8.9 Forge）：液态玻璃风格的PVP客户端
 
