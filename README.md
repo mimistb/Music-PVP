@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/banner.png" alt="Music PVP" width="640"></p>
+<p align="center"><img src="docs/banner.jpg" alt="Music PVP" width="640"></p>
 
 # Music PVP
 
