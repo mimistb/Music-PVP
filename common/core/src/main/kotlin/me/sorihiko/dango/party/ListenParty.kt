@@ -101,8 +101,9 @@ object ListenParty {
     private var lastRequestAt = 0L
     private var lastCorrectionAt = 0L
     private var lastMembersAt = 0L
-    private var linkDown = false
-    private var hostOffline = false
+    // MQTT 读线程会写这两个字段，tick 线程会读；没有 volatile 时可见性没有保证
+    @Volatile private var linkDown = false
+    @Volatile private var hostOffline = false
 
     init {
         Thread({
@@ -487,11 +488,27 @@ object ListenParty {
         } catch (_: Exception) {
             return
         }
-        when {
-            tail == "s" -> onState(o, retained)
-            tail.startsWith("m/") -> onPresence(tail.substring(2), o, retained)
+        // 字段类型异常（null / 字符串 / 对象）会让 Gson 直接抛异常；
+        // 异常若逃到 MQTT 读线程会触发断线重连，而保留消息会在重连后立刻重投，形成无限重连循环。
+        try {
+            when {
+                tail == "s" -> onState(o, retained)
+                tail.startsWith("m/") -> onPresence(tail.substring(2), o, retained)
+            }
+        } catch (t: Throwable) {
+            DangoLogger.warn("Party message ignored: {}", t.toString())
         }
     }
+
+    /** 宽容取值：字段缺失、为 null 或类型不对时都用默认值，不让一条坏消息打断连接 */
+    private fun JsonObject.str(key: String, def: String = ""): String =
+        runCatching { get(key)?.asString ?: def }.getOrDefault(def)
+
+    private fun JsonObject.num(key: String, def: Long = 0L): Long =
+        runCatching { get(key)?.asLong ?: def }.getOrDefault(def)
+
+    private fun JsonObject.flag(key: String, def: Boolean = false): Boolean =
+        runCatching { get(key)?.asBoolean ?: def }.getOrDefault(def)
 
     private fun onState(o: JsonObject, retained: Boolean) {
         val host = o.get("host")?.takeIf { it.isJsonPrimitive }?.asString ?: return
@@ -499,28 +516,29 @@ object ListenParty {
         // 房主会收到自己发的保留消息，忽略掉
         if (role == Role.HOST && host == myUid) return
         hostUid = host
-        hostName = o.get("hostName")?.asString ?: ""
+        hostName = o.str("hostName")
         stateAt = System.currentTimeMillis()
         if (!retained) stateLive = true
         if (role != Role.MEMBER) return
 
-        val id = o.get("trackId")?.takeIf { it.isJsonPrimitive }?.asLong ?: 0L
+        val id = o.num("trackId")
         if (id <= 0L) {
             remote = null
-            // 房主没在放歌：成员也别继续放，免得各听各的
+            // 房主没在放歌：成员也别继续放，免得各听各的。
+            // 这里用幂等 pause：worker 真正执行时成员可能已经自己暂停，toggle 会把它反而打开。
             if (MusicPlayer.state == MusicPlayer.State.PLAYING) {
-                worker.execute { MusicPlayer.togglePause() }
+                worker.execute { MusicPlayer.pause() }
             }
             return
         }
         remote = RemoteState(
             trackId = id,
-            name = o.get("name")?.asString ?: "",
-            artists = (o.get("artists")?.asString ?: "").split(" / ").filter { it.isNotEmpty() },
-            cover = o.get("cover")?.asString ?: "",
-            duration = o.get("duration")?.asLong ?: 0L,
-            pos = o.get("pos")?.asLong ?: 0L,
-            playing = o.get("playing")?.asBoolean ?: false,
+            name = o.str("name"),
+            artists = o.str("artists").split(" / ").filter { it.isNotEmpty() },
+            cover = o.str("cover"),
+            duration = o.num("duration"),
+            pos = o.num("pos"),
+            playing = o.flag("playing"),
             at = stateAt,
         )
     }
@@ -529,7 +547,7 @@ object ListenParty {
         if (uid.isEmpty() || uid == myUid) return
         // 服务器上留着的旧成员消息先不管，等下一次实时广播（5 秒内）再算
         if (retained) return
-        val name = o.get("name")?.asString ?: "?"
+        val name = o.str("name", "?")
         synchronized(presenceLock) { presences[uid] = Presence(name, System.currentTimeMillis()) }
         rebuildMembers()
     }

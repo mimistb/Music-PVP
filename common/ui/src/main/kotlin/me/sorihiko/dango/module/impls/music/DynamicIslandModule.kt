@@ -2,7 +2,7 @@ package me.sorihiko.dango.module.impls.music
 
 import me.sorihiko.dango.DangoClient
 import me.sorihiko.dango.event.EventHandler
-import me.sorihiko.dango.events.WorldRenderEndEvent
+import me.sorihiko.dango.events.HudRenderEvent
 import me.sorihiko.dango.font.KaraokeText
 import me.sorihiko.dango.font.MixedText
 import me.sorihiko.dango.gfx.GuiCanvas
@@ -17,6 +17,7 @@ import me.sorihiko.dango.module.values.IntValue
 import me.sorihiko.dango.module.values.ModuleValue
 import me.sorihiko.dango.music.CoverCache
 import me.sorihiko.dango.music.MusicPlayer
+import me.sorihiko.dango.platform.Keys
 import me.sorihiko.dango.lyrics.LyricLine
 import me.sorihiko.dango.ui.LayoutBounds
 import me.sorihiko.dango.ui.ShadowStyle
@@ -179,8 +180,8 @@ class DynamicIslandModule : Module() {
     /** 正在显示灵动岛歌词 */
     val lyricsEnabled: Boolean get() = enabled && islandLyricsSetting
 
-    /** 灵动岛能否承接 TAB 列表：模块开启且歌词关闭（歌词开着时列表临时隐藏） */
-    val isIslandTabHost: Boolean get() = enabled && !islandLyricsSetting
+    /** 灵动岛能否承接 TAB 列表：模块开启即可；歌词开着时按住 TAB 由列表临时顶替歌词（松手恢复） */
+    val isIslandTabHost: Boolean get() = enabled
 
     /** 歌词（当前句 / 下一句）的排版缓存：同一句、同一字号每帧直接复用，不再反复量宽度 */
     private class LineCache {
@@ -262,7 +263,7 @@ class DynamicIslandModule : Module() {
             (76f + max(tw, 150f) + 44f) to 76f
         }
         Kind.IDLE -> {
-            // 按住 TAB：整个胶囊临时让给横向 TAB 列表（歌词开着时 tabList 为 false，不会进来）
+            // 按住 TAB：整个胶囊临时让给横向 TAB 列表（歌词开着时同样让位，列表显示期间歌词不画）
             if (tabList) {
                 TabStatsHudModule.of()?.measure(maxW, maxH) ?: (0f to 0f)
             } else {
@@ -299,7 +300,7 @@ class DynamicIslandModule : Module() {
     // ---------------------------------------------------------------- 渲染
 
     @EventHandler
-    fun render(e: WorldRenderEndEvent) {
+    fun render(e: HudRenderEvent) {
         if (!enabled) return
         val now = System.nanoTime()
         val dt = if (lastNanos == 0L) 0.016f else ((now - lastNanos) / 1e9f).coerceIn(0f, 0.05f)
@@ -314,8 +315,14 @@ class DynamicIslandModule : Module() {
         val sf = platform.guiScale
         val top = 18f * sf / k                       // 和原来一样，留出 Boss 血条的位置
 
-        // 按住 TAB 时灵动岛临时让给 TAB 统计列表；歌词开着时 isOpen 为 false（列表自动隐藏）
+        // 按住 TAB 时灵动岛临时让给 TAB 统计列表；歌词开着也照常让位，松开后歌词自动恢复
         val tabList = TabStatsHudModule.of()?.isOpen == true
+
+        // 兜底：灵动岛没接到列表（比如 TabStats 被关掉，此时显示的是原版名单）时，
+        // 歌词内容整体让位，避免盖住名单；这一帧不改任何状态，松开 TAB 立即按原样恢复
+        if (!tabList && lyricsEnabled && musicIdle() && platform.inGame &&
+            !platform.chatOpen && platform.isKeyDown(Keys.TAB)
+        ) return
 
         watchMusic()
         curCurrent = null
@@ -337,11 +344,14 @@ class DynamicIslandModule : Module() {
             // 灵动岛歌词关掉了（2D / 3D 歌词接管时也会自动关）：显示歌名，不要空着
             curTitle = MusicPlayer.current?.name
         }
-        if (curCurrent != null) {
-            val size = lyricSize.value
-            kara.prepare(curLine, curLineEndMs, curPosMs, lineShown(line1, curCurrent!!, size), size, Theme.FONT_MEDIUM)
-        } else {
-            kara.reset()
+        // TAB 列表显示期间歌词不绘制：省掉逐字排版的开销，松手那一帧会按最新进度重排
+        if (!tabList) {
+            if (curCurrent != null) {
+                val size = lyricSize.value
+                kara.prepare(curLine, curLineEndMs, curPosMs, lineShown(line1, curCurrent!!, size), size, Theme.FONT_MEDIUM)
+            } else {
+                kara.reset()
+            }
         }
         // 换句：短淡入 + 轻微上移，切到下一句时是平滑的
         if (curCurrent != lastLineText) {

@@ -63,7 +63,13 @@ public class EventManager {
                     && listenerHook.config.ignoreCanceled()) {
                 continue;
             }
-            listenerHook.call(event);
+            try {
+                listenerHook.call(event);
+            } catch (Throwable t) {
+                // 单个监听器出错不能中断整轮分发，否则同事件的其它模块这一帧全部跳过，
+                // 异常还会继续抛进游戏主循环。这里隔离故障并留下日志。
+                DangoLogger.error("Event listener failed: {}", t.toString());
+            }
         }
     }
 

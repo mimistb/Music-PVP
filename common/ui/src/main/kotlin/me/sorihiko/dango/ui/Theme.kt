@@ -38,6 +38,39 @@ object Theme {
 
     val ICON_DISABLED = Color(0.38f, 0.38f, 0.42f, 1f)
 
+    // ---- 交互状态：悬停提亮、按下加深，全界面共用同一套反馈 ----
+    val HAIRLINE_HOVER = Color(1f, 1f, 1f, 0.15f)
+    val CARD_PRESS = Color(1f, 1f, 1f, 0.13f)
+    /** 页面遮罩：让玻璃窗与背景拉开一层 */
+    val OVERLAY = Color(0f, 0f, 0f, 0.22f)
+    /** 加载占位块与流光 */
+    val SKELETON = Color(1f, 1f, 1f, 0.045f)
+    val SKELETON_SHINE = Color(1f, 1f, 1f, 0.07f)
+
+    // ---- 间距梯度（4 的倍数，所有页面统一引用，避免散落魔数） ----
+    const val SPACE_2 = 2f
+    const val SPACE_4 = 4f
+    const val SPACE_6 = 6f
+    const val SPACE_8 = 8f
+    const val SPACE_10 = 10f
+    const val SPACE_12 = 12f
+    const val SPACE_14 = 14f
+    const val SPACE_16 = 16f
+    const val SPACE_20 = 20f
+    const val SPACE_24 = 24f
+    const val SPACE_28 = 28f
+
+    // ---- 圆角梯度 ----
+    const val RADIUS_WINDOW = 30f
+    const val RADIUS_CARD = 14f
+    const val RADIUS_CONTROL = 10f
+    const val RADIUS_CHIP = 8f
+
+    // ---- 动效时长（毫秒）：快反馈 / 常规 / 慢速入场 ----
+    const val DUR_FAST = 140
+    const val DUR_BASE = 220
+    const val DUR_SLOW = 320
+
     // ---- 玻璃材质：越靠前的层越亮 ----
     val GLASS_WINDOW = GlassStyle(
         radius = 30f,

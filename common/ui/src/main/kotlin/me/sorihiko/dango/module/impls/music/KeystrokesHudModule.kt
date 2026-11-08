@@ -4,7 +4,7 @@ import glidehud.api.Key
 import glidehud.feature.KeystrokesState
 import me.sorihiko.dango.DangoClient
 import me.sorihiko.dango.event.EventHandler
-import me.sorihiko.dango.events.WorldRenderEndEvent
+import me.sorihiko.dango.events.HudRenderEvent
 import me.sorihiko.dango.font.MixedText
 import me.sorihiko.dango.gfx.GuiCanvas
 import me.sorihiko.dango.hud.HudData
@@ -121,7 +121,7 @@ class KeystrokesHudModule : Module() {
     }
 
     @EventHandler
-    fun render(e: WorldRenderEndEvent) {
+    fun render(e: HudRenderEvent) {
         if (!enabled) return
         state.keys = HudData.keys
         state.showSpace = showSpace.get()

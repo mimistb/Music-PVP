@@ -133,11 +133,13 @@ class MqttClient(
     private fun connectOnce() {
         val (host, port) = BROKERS[brokerIndex]
         val s = Socket()
+        // 先登记再连接：connect 抛异常时 loop() 的 finally -> dropConnection() 才能关掉它，
+        // 否则每次重试都会泄漏一个 Socket / 文件描述符。
+        socket = s
         s.tcpNoDelay = true
         s.connect(InetSocketAddress(host, port), CONNECT_TIMEOUT_MS)
         s.soTimeout = IDLE_TIMEOUT_MS
         val os = s.outputStream
-        socket = s
         out = os
         input = s.inputStream
 

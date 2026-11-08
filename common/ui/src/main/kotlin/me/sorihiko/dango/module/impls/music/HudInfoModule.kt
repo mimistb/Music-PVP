@@ -2,7 +2,7 @@ package me.sorihiko.dango.module.impls.music
 
 import me.sorihiko.dango.DangoClient
 import me.sorihiko.dango.event.EventHandler
-import me.sorihiko.dango.events.WorldRenderEndEvent
+import me.sorihiko.dango.events.HudRenderEvent
 import me.sorihiko.dango.font.MixedText
 import me.sorihiko.dango.gfx.GuiCanvas
 import me.sorihiko.dango.module.Category
@@ -51,16 +51,41 @@ class HudInfoModule : Module() {
     @ModuleValue("缩放", "胶囊大小")
     private val scale = FloatValue(0.6f, 1.6f, 1f, 2)
 
-    @ModuleValue("X 坐标", "水平位置（打开聊天栏后可拖动）")
-    private val posX = FloatValue(0f, 1f, 0.5f, 3)
+    @ModuleValue("X 坐标", "玩家名 / 护甲的水平位置（打开聊天栏后可拖动）")
+    private val posX = FloatValue(0f, 1f, 0.40f, 3)
 
-    @ModuleValue("Y 坐标", "垂直位置（打开聊天栏后可拖动）")
+    @ModuleValue("Y 坐标", "玩家名 / 护甲的垂直位置（打开聊天栏后可拖动）")
     private val posY = FloatValue(0f, 1f, 0f, 3)
+
+    @ModuleValue("帧率 X 坐标", "帧率胶囊的水平位置（打开聊天栏后可单独拖动）")
+    private val fpsX = FloatValue(0f, 1f, 0.50f, 3)
+
+    @ModuleValue("帧率 Y 坐标", "帧率胶囊的垂直位置")
+    private val fpsY = FloatValue(0f, 1f, 0f, 3)
+
+    @ModuleValue("延迟 X 坐标", "延迟胶囊的水平位置（打开聊天栏后可单独拖动）")
+    private val pingX = FloatValue(0f, 1f, 0.56f, 3)
+
+    @ModuleValue("延迟 Y 坐标", "延迟胶囊的垂直位置")
+    private val pingY = FloatValue(0f, 1f, 0f, 3)
+
+    @ModuleValue("时间 X 坐标", "时间胶囊的水平位置（打开聊天栏后可单独拖动）")
+    private val clockX = FloatValue(0f, 1f, 0.61f, 3)
+
+    @ModuleValue("时间 Y 坐标", "时间胶囊的垂直位置")
+    private val clockY = FloatValue(0f, 1f, 0f, 3)
+
+    @ModuleValue("CPS X 坐标", "CPS 胶囊的水平位置（打开聊天栏后可单独拖动）")
+    private val cpsX = FloatValue(0f, 1f, 0.66f, 3)
+
+    @ModuleValue("CPS Y 坐标", "CPS 胶囊的垂直位置")
+    private val cpsY = FloatValue(0f, 1f, 0f, 3)
 
     private var context: GuiCanvas? = null
     private val mt = MixedText()
 
-    private var dragging = false
+    /** 当前正在拖动的胶囊类型；-1 表示没有拖动 */
+    private var dragKind = -1
     private var dragDX = 0f
     private var dragDY = 0f
 
@@ -79,9 +104,10 @@ class HudInfoModule : Module() {
     private val segBold = BooleanArray(24)
     private var segCount = 0
 
-    /** 每一类信息各占一个独立胶囊：记录它在 segText 里的区间 */
+    /** 每一类信息各占一个独立胶囊：记录它在 segText 里的区间与类型 */
     private val blockStart = IntArray(8)
     private val blockEnd = IntArray(8)
+    private val blockKind = IntArray(8)
     private var blockCount = 0
 
     /** fps / 延迟 / 玩家名 / CPS 的字符串缓存：数值没变就直接复用，避免每帧新建字符串 */
@@ -98,10 +124,9 @@ class HudInfoModule : Module() {
     /** 低耐久告警色 */
     private val warnColor = Color.fromHex("#FF453A")
 
-    /** 独立胶囊的高度 / 左右内边距 / 胶囊间距（逻辑像素） */
+    /** 独立胶囊的高度 / 左右内边距（逻辑像素） */
     private val chipH = 26f
     private val chipPad = 12f
-    private val chipGap = 6f
 
     /** 每块自己的液态玻璃；半径按胶囊高度取半，避免小面板被大斜面糊住 */
     private val chipGlass = Theme.GLASS_WINDOW.copy(
@@ -139,7 +164,8 @@ class HudInfoModule : Module() {
         segCount = 0
         blockCount = 0
         val platform = DangoClient.platform
-        addBlock {
+        // 玩家名与护甲共用一个胶囊：它们始终相邻，拆分后位置项会翻倍且无实际意义
+        addBlock(KIND_IDENTITY) {
             if (showName.get()) {
                 val name = platform.playerName
                 if (name != lastName) {
@@ -148,8 +174,15 @@ class HudInfoModule : Module() {
                 }
                 addSeg(nameText, bold = true)
             }
+            val armor = armorSegments
+            val warn = armorWarn
+            if (armor != null) {
+                for (i in armor.indices) {
+                    addSeg(armor[i], warn != null && i < warn.size && warn[i])
+                }
+            }
         }
-        addBlock {
+        addBlock(KIND_FPS) {
             if (showFps.get()) {
                 val fps = platform.fps
                 if (fps != lastFps) {
@@ -159,7 +192,7 @@ class HudInfoModule : Module() {
                 addSeg(fpsText)
             }
         }
-        addBlock {
+        addBlock(KIND_PING) {
             if (showPing.get()) {
                 val ping = platform.pingMs
                 if (ping > 0) {
@@ -171,18 +204,7 @@ class HudInfoModule : Module() {
                 }
             }
         }
-        addBlock { if (showClock.get()) addSeg(clockNow()) }
-
-        // 护甲段：legacy 已经按设置拼好文字，这里只按低耐久标记着色
-        val armor = armorSegments
-        val warn = armorWarn
-        addBlock {
-            if (armor != null) {
-                for (i in armor.indices) {
-                    addSeg(armor[i], warn != null && i < warn.size && warn[i])
-                }
-            }
-        }
+        addBlock(KIND_CLOCK) { if (showClock.get()) addSeg(clockNow()) }
 
         // CPS：-1 表示该侧不显示；两侧都显示时拼成 "左/右 cps"
         val left = cpsLeft
@@ -196,7 +218,7 @@ class HudInfoModule : Module() {
                     else -> "${if (left >= 0) left else right} cps"
                 }
             }
-            addBlock { addSeg(cpsText) }
+            addBlock(KIND_CPS) { addSeg(cpsText) }
         } else {
             // 关闭时清掉缓存，下次开启立即重建
             lastCpsLeft = Int.MIN_VALUE
@@ -206,7 +228,7 @@ class HudInfoModule : Module() {
     }
 
     /** 一段独立的显示块：里面 0 条文字就不占位置 */
-    private inline fun addBlock(build: () -> Unit) {
+    private inline fun addBlock(kind: Int, build: () -> Unit) {
         val i = blockCount
         if (i >= blockStart.size) return
         val start = segCount
@@ -214,8 +236,27 @@ class HudInfoModule : Module() {
         if (segCount > start) {
             blockStart[i] = start
             blockEnd[i] = segCount
+            blockKind[i] = kind
             blockCount++
         }
+    }
+
+    /** 胶囊类型对应的水平位置项 */
+    private fun xValue(kind: Int): FloatValue = when (kind) {
+        KIND_FPS -> fpsX
+        KIND_PING -> pingX
+        KIND_CLOCK -> clockX
+        KIND_CPS -> cpsX
+        else -> posX
+    }
+
+    /** 胶囊类型对应的垂直位置项 */
+    private fun yValue(kind: Int): FloatValue = when (kind) {
+        KIND_FPS -> fpsY
+        KIND_PING -> pingY
+        KIND_CLOCK -> clockY
+        KIND_CPS -> cpsY
+        else -> posY
     }
 
     private fun width(s: String, size: Float, font: String = Theme.FONT_REGULAR): Float = mt.width(s, size, font)
@@ -237,7 +278,7 @@ class HudInfoModule : Module() {
     }
 
     @EventHandler
-    fun render(e: WorldRenderEndEvent) {
+    fun render(e: HudRenderEvent) {
         if (!enabled) return
         val n = parts()
         if (n <= 0 || blockCount <= 0) return
@@ -249,55 +290,66 @@ class HudInfoModule : Module() {
         val lh = platform.windowHeight / k
         val mx = platform.mouseX / k
         val my = platform.mouseY / k
+        val h = chipH
 
-        // 每一类信息一个小胶囊，横向排开；整体仍由 posX / posY 决定位置
+        // 每个胶囊按自己的位置项独立摆放：名字+护甲 / 帧率 / 延迟 / 时间 / CPS
         val widths = FloatArray(blockCount)
-        var w = 0f
+        val xs = FloatArray(blockCount)
+        val ys = FloatArray(blockCount)
         for (b in 0 until blockCount) {
             widths[b] = chipWidth(b)
-            w += widths[b]
-            if (b > 0) w += chipGap
+            val bw = widths[b]
+            xs[b] = xValue(blockKind[b]).value * (lw - bw).coerceAtLeast(0f)
+            ys[b] = yValue(blockKind[b]).value * (lh - h).coerceAtLeast(0f)
         }
-        val h = chipH
-        var x = posX.value * (lw - w)
-        var y = posY.value * (lh - h)
 
         if (!platform.chatOpen) {
-            dragging = false
+            dragKind = -1
         } else if (platform.isMouseDown(0)) {
-            if (!dragging && mx in x..(x + w) && my in y..(y + h)) {
-                dragging = true
-                dragDX = mx - x
-                dragDY = my - y
+            // 命中哪个胶囊就只拖哪个，其余胶囊位置完全不动
+            if (dragKind < 0) {
+                for (b in 0 until blockCount) {
+                    if (mx >= xs[b] && mx < xs[b] + widths[b] && my >= ys[b] && my < ys[b] + h) {
+                        dragKind = blockKind[b]
+                        dragDX = mx - xs[b]
+                        dragDY = my - ys[b]
+                        break
+                    }
+                }
             }
-            if (dragging) {
-                x = (mx - dragDX).coerceIn(0f, (lw - w).coerceAtLeast(0f))
-                y = (my - dragDY).coerceIn(0f, (lh - h).coerceAtLeast(0f))
-                posX.setValue(if (lw > w) x / (lw - w) else 0f)
-                posY.setValue(if (lh > h) y / (lh - h) else 0f)
+            if (dragKind >= 0) {
+                for (b in 0 until blockCount) {
+                    if (blockKind[b] != dragKind) continue
+                    val bw = widths[b]
+                    val nx = (mx - dragDX).coerceIn(0f, (lw - bw).coerceAtLeast(0f))
+                    val ny = (my - dragDY).coerceIn(0f, (lh - h).coerceAtLeast(0f))
+                    xValue(dragKind).setValue(if (lw > bw) nx / (lw - bw) else 0f)
+                    yValue(dragKind).setValue(if (lh > h) ny / (lh - h) else 0f)
+                    xs[b] = nx
+                    ys[b] = ny
+                    break
+                }
             }
         } else {
-            dragging = false
+            dragKind = -1
         }
 
-        val total = LayoutBounds(x, y, w, h)
         val ctx = context ?: DangoClient.gfx.newCanvas().also { context = it }
         ctx.begin(glass.get(), mx.toInt(), my.toInt())
         try {
             ctx.pushScale(k, k, 1f)
             val glassOn = glass.get()
-            val ty = y + h / 2f - 12f * 0.39f - 0.5f
             mt.clear()
-            mt.clip = total
-            var bx = x
+            // 独立位置后不能再裁成整行矩形，否则拖到别处的胶囊会被裁掉
+            mt.clip = LayoutBounds(0f, 0f, lw, lh)
             for (b in 0 until blockCount) {
-                val bw = widths[b]
-                val chip = LayoutBounds(bx, y, bw, h)
+                val chip = LayoutBounds(xs[b], ys[b], widths[b], h)
                 if (glassOn) {
                     ctx.drawGlass(chip, chipGlass)
                 } else {
                     ctx.drawShape(chip, ShapeStyle(darkChip, h / 2f, 1f, chipBorder))
                 }
+                val ty = chip.y + h / 2f - 12f * 0.39f - 0.5f
                 var tx = chip.x + chipPad
                 for (i in blockStart[b] until blockEnd[b]) {
                     if (i > blockStart[b]) {
@@ -314,7 +366,6 @@ class HudInfoModule : Module() {
                     text(ctx, s, tx, ty, 12f, color, font)
                     tx += width(s, 12f, font)
                 }
-                bx += bw + chipGap
             }
             ctx.popTransform()
             mt.flush(k)
@@ -324,6 +375,13 @@ class HudInfoModule : Module() {
     }
 
     companion object {
+        /** 胶囊类型：玩家名+护甲 / 帧率 / 延迟 / 时间 / CPS */
+        private const val KIND_IDENTITY = 0
+        private const val KIND_FPS = 1
+        private const val KIND_PING = 2
+        private const val KIND_CLOCK = 3
+        private const val KIND_CPS = 4
+
         @Volatile
         private var instance: HudInfoModule? = null
 

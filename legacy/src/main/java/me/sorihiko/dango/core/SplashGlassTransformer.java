@@ -9,7 +9,11 @@ import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.FieldNode;
 import org.objectweb.asm.tree.FieldInsnNode;
+import org.objectweb.asm.tree.FrameNode;
 import org.objectweb.asm.tree.InsnList;
+import org.objectweb.asm.tree.InsnNode;
+import org.objectweb.asm.tree.JumpInsnNode;
+import org.objectweb.asm.tree.LabelNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.VarInsnNode;
@@ -30,6 +34,7 @@ public final class SplashGlassTransformer implements IClassTransformer {
     private static final String MAIN_MENU = "net.minecraft.client.gui.GuiMainMenu";
     private static final String LOADING = "net.minecraft.client.gui.GuiDownloadTerrain";
     private static final String BUTTON = "net.minecraft.client.gui.GuiButton";
+    private static final String SCREEN = "net.minecraft.client.gui.GuiScreen";
     private static final String HOOK = "me/sorihiko/dango/core/SplashGlassHook";
     private static final String DRAW_DESC = "(IIF)V";
     /** drawScreen 的候选名：MCP / srg / 混淆。GuiMainMenu 里还有两个 (IIF)V 的私有方法，必须按名字筛。 */
@@ -38,6 +43,10 @@ public final class SplashGlassTransformer implements IClassTransformer {
     @Override
     public byte[] transform(String name, String transformedName, byte[] basicClass) {
         if (basicClass == null) return null;
+        // GuiScreen 只补鼠标点击（主菜单右上角功能入口），其余逻辑不受影响
+        if (SCREEN.equals(transformedName) || SCREEN.equals(name)) {
+            return patchScreenClick(basicClass);
+        }
         String hookMethod;
         boolean frameStart;
         if (MAIN_MENU.equals(transformedName) || MAIN_MENU.equals(name)) {
@@ -68,6 +77,50 @@ public final class SplashGlassTransformer implements IClassTransformer {
             // 补丁失败就原样返回，绝不让游戏起不来
             return basicClass;
         }
+    }
+
+    /**
+     * GuiScreen#mouseClicked 头部：命中主菜单右上角功能入口时直接结束本次点击。
+     * 钩子内部会判断当前界面是否为 GuiMainMenu，其它界面原样放行；补丁失败返回原字节。
+     */
+    private static byte[] patchScreenClick(byte[] basicClass) {
+        try {
+            ClassReader reader = new ClassReader(basicClass);
+            ClassNode node = new ClassNode(Opcodes.ASM5);
+            reader.accept(node, 0);
+
+            boolean patched = false;
+            for (MethodNode method : node.methods) {
+                if (!"(III)V".equals(method.desc) || !isMouseClicked(method.name)) continue;
+                LabelNode skip = new LabelNode();
+                InsnList call = new InsnList();
+                call.add(new VarInsnNode(Opcodes.ILOAD, 1));   // mouseX
+                call.add(new VarInsnNode(Opcodes.ILOAD, 2));   // mouseY
+                call.add(new VarInsnNode(Opcodes.ILOAD, 3));   // mouseButton
+                call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOK,
+                        "onMainMenuClick", "(III)Z", false));
+                call.add(new JumpInsnNode(Opcodes.IFEQ, skip));
+                call.add(new InsnNode(Opcodes.RETURN));
+                call.add(skip);
+                // skip 是新增的跳转目标，1.8.9（class 版本 52）要求分支目标有对应的栈帧，
+                // COMPUTE_MAXS 不会自动补 StackMapTable，缺帧会在类校验时抛 VerifyError。
+                // 插入点在方法头，局部变量表与操作数栈都没变，用 F_SAME。
+                call.add(new FrameNode(Opcodes.F_SAME, 0, null, 0, null));
+                method.instructions.insert(call);
+                patched = true;
+            }
+            if (!patched) return basicClass;
+
+            ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
+            node.accept(writer);
+            return writer.toByteArray();
+        } catch (Throwable t) {
+            return basicClass;
+        }
+    }
+
+    private static boolean isMouseClicked(String name) {
+        return "mouseClicked".equals(name) || "func_73864_a".equals(name);
     }
 
     /** 在 drawScreen 的每个 RETURN 前调用一次钩子（每个 RETURN 插入新的节点，避免共享链表节点）。 */

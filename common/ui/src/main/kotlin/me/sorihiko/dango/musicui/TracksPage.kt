@@ -203,9 +203,13 @@ internal class TracksPage(private val screen: MusicScreen) {
             if (ScreenState.page == Page.PLAYLIST) ScreenState.opened?.let { Library.ensureTracks(it.id) }
             // 每日推荐 / 免费听还没读完：给个提示，别让页面空着
             when (ScreenState.page) {
-                Page.DAILY -> ui.text(if (!NeteaseApi.loggedIn) "登录后查看每日推荐" else "加载中…",
-                    area.x + 12f, area.y + 20f, 12f, Theme.TEXT_TERTIARY)
-                Page.FREE -> ui.text("加载中…", area.x + 12f, area.y + 20f, 12f, Theme.TEXT_TERTIARY)
+                Page.DAILY -> if (!NeteaseApi.loggedIn) {
+                    ui.text("登录后查看每日推荐", area.x + 12f, area.y + 20f, 12f, Theme.TEXT_TERTIARY)
+                } else {
+                    drawLoadingRows(area)
+                }
+                Page.FREE -> drawLoadingRows(area)
+                Page.PLAYLIST -> drawLoadingRows(area)
                 else -> {}
             }
             return
@@ -279,7 +283,7 @@ internal class TracksPage(private val screen: MusicScreen) {
         // 返回
         if (state.backPage != null) {
             val bb = LayoutBounds(x, y + 2f, 28f, 28f)
-            ctx.drawShape(bb, ShapeStyle(if (ui.hover(bb)) Theme.CARD_HOVER else Theme.CARD, 14f))
+            ui.panel(bb, 14f)
             ui.icon("◀", bb.x + 13.5f, bb.y + 14f, 10f, Theme.TEXT_PRIMARY)
             ui.hits += bb to { screen.goBack() }
             x += 40f
@@ -326,7 +330,7 @@ internal class TracksPage(private val screen: MusicScreen) {
 
         // 右上角：列表 / 封面墙
         val seg = LayoutBounds(page.right - segW, y + 4f, segW, 26f)
-        ui.card(seg, Theme.CARD, 13f)
+        ui.panel(seg, 13f)
         val half = LayoutBounds(seg.x, seg.y, segW / 2f, seg.height)
         val other = LayoutBounds(seg.x + segW / 2f, seg.y, segW / 2f, seg.height)
         val coverView = state.coverView
@@ -344,7 +348,7 @@ internal class TracksPage(private val screen: MusicScreen) {
             val label = "定位"
             val lw = ui.width(label, 11f, Theme.FONT_MEDIUM) + 34f
             val lb = LayoutBounds(rightX - lw, y + 4f, lw, 26f)
-            ui.card(lb, if (ui.hover(lb)) Theme.CARD_HOVER else Theme.CARD, 13f)
+            ui.panel(lb, 13f)
             ui.icon("◎", lb.x + 14f, lb.y + 13f, 11f, RED)
             ui.text(label, lb.x + 25f, lb.y + 8f, 11f, Theme.TEXT_PRIMARY, Theme.FONT_MEDIUM)
             ui.hits += lb to { locateCurrent() }
@@ -356,7 +360,7 @@ internal class TracksPage(private val screen: MusicScreen) {
             val label = if (LocalLibrary.scanning) "扫描中" else "刷新"
             val lw = ui.width(label, 11f, Theme.FONT_MEDIUM) + 26f
             val rb = LayoutBounds(rightX - lw, y + 4f, lw, 26f)
-            ui.card(rb, if (ui.hover(rb)) Theme.CARD_HOVER else Theme.CARD, 13f)
+            ui.panel(rb, 13f)
             ui.text(label, rb.x + (rb.width - ui.width(label, 11f, Theme.FONT_MEDIUM)) / 2f, rb.y + 8f, 11f,
                 Theme.TEXT_PRIMARY, Theme.FONT_MEDIUM)
             ui.hits += rb to { LocalLibrary.scan() }
@@ -372,7 +376,7 @@ internal class TracksPage(private val screen: MusicScreen) {
         val ctx = ui.ctx
         val fw = 190f
         filterRect = LayoutBounds(rightX - fw, y + 4f, fw, 26f)
-        ui.card(filterRect, if (filterFocused) Theme.CARD_HOVER else Theme.CARD, 13f)
+        ui.panel(filterRect, 13f)
         if (filterFocused) ctx.drawShape(filterRect, ShapeStyle(Color(0f, 0f, 0f, 0f), 13f, 1f, RED))
         ctx.drawShape(LayoutBounds(filterRect.x + 10f, filterRect.y + 8f, 8f, 8f), ShapeStyle(Color(0f, 0f, 0f, 0f), 4f, 1.3f, Theme.TEXT_SECONDARY))
         ctx.drawShape(LayoutBounds(filterRect.x + 16.5f, filterRect.y + 15f, 4f, 1.5f), ShapeStyle(Theme.TEXT_SECONDARY, 0.75f))
@@ -455,6 +459,31 @@ internal class TracksPage(private val screen: MusicScreen) {
         sbDragging = false
     }
 
+    /** 歌曲读取中的骨架列表：与真实列表同一套行高和列位置，加载完成后不会跳版 */
+    private fun drawLoadingRows(list: LayoutBounds) {
+        val slow = System.currentTimeMillis() - ui.pageAt > 12000L
+        ui.text(
+            if (slow) "网络较慢，仍在读取歌曲…" else "正在读取歌曲…",
+            list.x + 12f, list.y, 11f, Theme.TEXT_SECONDARY, Theme.FONT_SEMIBOLD,
+        )
+        val body = LayoutBounds(list.x, list.y + 22f, list.width - 16f, list.height - 22f)
+        if (body.height <= 0f) return
+        val rowH = 44f
+        val rows = max(1, (body.height / rowH).toInt()).coerceAtMost(9)
+        ui.beginClip(body)
+        for (r in 0 until rows) {
+            val row = LayoutBounds(body.x, body.y + r * rowH, body.width, rowH - 4f)
+            ui.skeleton(LayoutBounds(row.x + 8f, row.y + 16f, 18f, 10f), 4f)
+            ui.skeleton(LayoutBounds(row.x + 46f, row.y + 4f, row.height - 8f, row.height - 8f), 6f)
+            val tx = row.x + 46f + row.height - 8f + 12f
+            val avail = (row.right - tx - 56f).coerceAtLeast(24f)
+            ui.skeleton(LayoutBounds(tx, row.y + 8f, avail * 0.62f, 12f), 4f)
+            ui.skeleton(LayoutBounds(tx, row.y + 26f, avail * 0.38f, 8f), 3f)
+            ui.skeleton(LayoutBounds(row.right - 56f, row.y + 14f, 44f, 10f), 4f)
+        }
+        ui.endClip()
+    }
+
     /** 列表：序号 / 小封面 / 歌名 / 歌手 / 时长 */
     private fun drawTrackList(list: LayoutBounds, all: List<NeteaseTrack>, tracks: List<Pair<Int, NeteaseTrack>>) {
         val ctx = ui.ctx
@@ -488,7 +517,7 @@ internal class TracksPage(private val screen: MusicScreen) {
                 val isCur = playing != null && playing.id == t.id
                 when {
                     isCur -> ctx.drawGlass(row, Theme.GLASS_SELECTION)
-                    ui.hover(row) -> ui.card(row, Theme.CARD_HOVER, 10f)
+                    ui.hover(row) -> ui.panel(row, 10f)
                 }
                 if (flash > 0f && t.id == flashId) {
                     ctx.drawShape(row, ShapeStyle(Color(0f, 0f, 0f, 0f), 10f, 1.5f, RED.copy(a = flash)))

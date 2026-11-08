@@ -2,7 +2,7 @@ package me.sorihiko.dango.module.impls.music
 
 import me.sorihiko.dango.DangoClient
 import me.sorihiko.dango.event.EventHandler
-import me.sorihiko.dango.events.WorldRenderEndEvent
+import me.sorihiko.dango.events.HudRenderEvent
 import me.sorihiko.dango.font.KaraokeText
 import me.sorihiko.dango.font.MixedText
 import me.sorihiko.dango.gfx.GuiCanvas
@@ -221,7 +221,7 @@ class Lyrics2DModule : Module() {
     // ---------------------------------------------------------------- 渲染
 
     @EventHandler
-    fun render(e: WorldRenderEndEvent) {
+    fun render(e: HudRenderEvent) {
         if (!enabled || !lyrics.get()) {
             alpha = 0f
             lastKey = null

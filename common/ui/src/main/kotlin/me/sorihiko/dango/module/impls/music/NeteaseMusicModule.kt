@@ -76,6 +76,9 @@ class NeteaseMusicModule : Module() {
     @ModuleValue("麦克风静音", "打开后不发送自己的声音")
     private val voiceMicMuted = BooleanValue(false)
 
+    @ModuleValue("液态模糊", "关闭后所有液态玻璃面板改为半透明纯色，降低 GPU 占用")
+    val liquidBlur = BooleanValue(true)
+
     private var wasDown = false
     /** 每个快捷键上一刻是否按着（只在按下的瞬间触发一次） */
     private val hotkeyDown = HashMap<IntValue, Boolean>()
@@ -89,6 +92,10 @@ class NeteaseMusicModule : Module() {
             keyVolDown to { changeVolume(-0.05f) },
             keyLyrics to { lyrics()?.toggleLyrics() },
         )
+    }
+
+    override fun init() {
+        instance = this
     }
 
     override fun onEnable() {
@@ -152,5 +159,12 @@ class NeteaseMusicModule : Module() {
             if (now && hotkeyDown[key] != true && inGame) action()
             hotkeyDown[key] = now
         }
+    }
+
+    companion object {
+        @Volatile
+        private var instance: NeteaseMusicModule? = null
+
+        fun of(): NeteaseMusicModule? = instance
     }
 }

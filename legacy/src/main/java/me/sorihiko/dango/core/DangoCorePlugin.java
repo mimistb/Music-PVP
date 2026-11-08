@@ -26,6 +26,7 @@ public final class DangoCorePlugin implements IFMLLoadingPlugin {
                 "me.sorihiko.dango.core.CleanViewTransformer",
                 "me.sorihiko.dango.core.ItemPhysicsTransformer",
                 "me.sorihiko.dango.core.BetterChatTransformer",
+                "me.sorihiko.dango.core.ChatTranslateTransformer",
                 "me.sorihiko.dango.core.FishingRodTransformer"
         };
     }

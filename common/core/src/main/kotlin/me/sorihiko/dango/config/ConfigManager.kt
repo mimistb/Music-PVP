@@ -69,6 +69,12 @@ class ConfigManager(
                 (obj.get("enabled") as? JsonPrimitive)?.let { enabledMap[module] = it.asBoolean }
 
                 val values = obj.get("values") as? JsonObject ?: continue
+                // 先让模块把旧键迁移到新键，再按字段名读取
+                try {
+                    module.migrateLegacyConfig(values)
+                } catch (e: Exception) {
+                    DangoLogger.warn("Config migration skipped: {}", module.name)
+                }
                 for (field in valueFields(module)) {
                     val json = values.get(field.name) ?: continue
                     try {
@@ -173,5 +179,146 @@ class ConfigManager(
 
     fun installShutdownHook() {
         Runtime.getRuntime().addShutdownHook(Thread({ saveIfChanged() }, "Dango-ConfigSave"))
+    }
+
+    // ---------------------------------------------------------------- 参数档案
+
+    /** 用户档案目录：config/Music PVP/profiles */
+    private fun profilesDir(): Path = file.parent.resolve("profiles")
+
+    /** 一键导出目录：config/Music PVP/exports */
+    private fun exportsDir(): Path = file.parent.resolve("exports")
+
+    /** 档案名清洗：去掉路径分隔符等非法字符，避免写到目录外 */
+    private fun sanitize(name: String): String {
+        val cleaned = name.trim().replace(Regex("[\\\\/:*?\"<>|]"), "_")
+        return cleaned.take(48).ifEmpty { "未命名" }
+    }
+
+    /** 列出全部档案名（不含 .json），按名称排序 */
+    fun listProfiles(): List<String> {
+        val dir = profilesDir()
+        if (!Files.isDirectory(dir)) return emptyList()
+        return try {
+            Files.list(dir).use { stream ->
+                stream.filter { it.fileName.toString().endsWith(".json") }
+                    .map { it.fileName.toString().removeSuffix(".json") }
+                    .sorted()
+                    .collect(java.util.stream.Collectors.toList())
+            }
+        } catch (e: Exception) {
+            DangoLogger.error("Profile list failed. {}", e)
+            emptyList()
+        }
+    }
+
+    /** 把当前全部参数保存成一份档案；同名覆盖 */
+    fun saveProfile(name: String): Boolean {
+        val target = profilesDir().resolve(sanitize(name) + ".json")
+        return try {
+            Files.createDirectories(target.parent)
+            Files.write(target, serialize().toByteArray(StandardCharsets.UTF_8))
+            DangoLogger.info("Profile saved: {}", target.toString())
+            true
+        } catch (e: Exception) {
+            DangoLogger.error("Profile save failed. {}", e)
+            false
+        }
+    }
+
+    /** 读取档案并立刻应用到所有模块 */
+    fun loadProfile(name: String): Boolean {
+        val source = profilesDir().resolve(sanitize(name) + ".json")
+        return applyFile(source)
+    }
+
+    fun deleteProfile(name: String): Boolean {
+        val target = profilesDir().resolve(sanitize(name) + ".json")
+        return try {
+            Files.deleteIfExists(target)
+        } catch (e: Exception) {
+            DangoLogger.error("Profile delete failed. {}", e)
+            false
+        }
+    }
+
+    /** 一键导出：把当前参数写到 exports/时间戳.json，并返回文件路径 */
+    fun exportCurrent(): Path? {
+        val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.ROOT).format(java.util.Date())
+        val target = exportsDir().resolve("MusicPVP-$stamp.json")
+        return try {
+            Files.createDirectories(target.parent)
+            Files.write(target, serialize().toByteArray(StandardCharsets.UTF_8))
+            DangoLogger.info("Config exported: {}", target.toString())
+            target
+        } catch (e: Exception) {
+            DangoLogger.error("Config export failed. {}", e)
+            null
+        }
+    }
+
+    /** 一键导入：读取 exports 目录里最新的那份导出文件 */
+    fun importLatestExport(): Boolean {
+        val dir = exportsDir()
+        if (!Files.isDirectory(dir)) return false
+        var latest: Path? = null
+        var best = Long.MIN_VALUE
+        try {
+            Files.list(dir).use { stream ->
+                stream.filter { it.fileName.toString().endsWith(".json") }.forEach { p ->
+                    val t = Files.getLastModifiedTime(p).toMillis()
+                    if (t > best) {
+                        best = t
+                        latest = p
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            DangoLogger.error("Config import scan failed. {}", e)
+            return false
+        }
+        return latest?.let { applyFile(it) } ?: false
+    }
+
+    fun importFile(path: Path): Boolean = applyFile(path)
+
+    private fun applyFile(source: Path): Boolean {
+        if (!Files.isRegularFile(source)) return false
+        return try {
+            val text = String(Files.readAllBytes(source), StandardCharsets.UTF_8)
+            val root = JsonParser().parse(text).asJsonObject
+            applyRoot(root)
+            DangoLogger.info("Config applied: {}", source.toString())
+            true
+        } catch (e: Exception) {
+            DangoLogger.error("Config apply failed. {}", e)
+            false
+        }
+    }
+
+    /** 把一份解析好的配置立刻灌进所有模块（档案载入 / 导入共用） */
+    private fun applyRoot(root: JsonObject) {
+        for (module in modules()) {
+            val obj = root.get(module.name) as? JsonObject ?: continue
+            (obj.get("enabled") as? JsonPrimitive)?.let {
+                try {
+                    module.enabled = it.asBoolean
+                } catch (ex: Exception) {
+                    DangoLogger.warn("Profile apply enabled failed: {}", module.name)
+                }
+            }
+            val values = obj.get("values") as? JsonObject ?: continue
+            for (field in valueFields(module)) {
+                val json = values.get(field.name) ?: continue
+                try {
+                    applyValue(field.get(module), json)
+                } catch (ex: Exception) {
+                    DangoLogger.warn("Profile value skipped: {}.{}", module.name, field.name)
+                }
+            }
+        }
+        (root.get("ui") as? JsonObject)?.let { UiPrefs.load(it) }
+        // 应用后马上落盘，避免玩家下次启动又回到旧参数
+        saveIfChanged()
     }
 }

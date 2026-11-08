@@ -170,6 +170,11 @@ object MusicPlayer {
         return r
     }
 
+    /** 幂等暂停：只在真的在播时停下，供"房主停止跟随"这类异步指令使用 */
+    fun pause() {
+        if (state == State.PLAYING) togglePause()
+    }
+
     fun togglePause() {
         when (state) {
             State.PLAYING -> {
@@ -264,9 +269,18 @@ object MusicPlayer {
         message = msg
         val giveUp = failStreak >= 5
         if (giveUp) message = "连续 ${failStreak} 首无法播放，已停止"
-        loader.execute {
-            Thread.sleep(1500)
+        // 不要占用唯一的 loader 线程睡觉：否则失败后的 1.5 秒内用户点的歌全部排队卡住
+        Thread({
+            try {
+                Thread.sleep(1500)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return@Thread
+            }
             if (gen == generation && !giveUp && queue.size > 1) next()
+        }, "Dango-MusicRetry").apply {
+            isDaemon = true
+            start()
         }
     }
 
@@ -359,7 +373,17 @@ object MusicPlayer {
                 }
                 if (out == null) {
                     val format = AudioFormat(header.frequency().toFloat(), 16, sb.channelCount, true, false)
-                    out = openLine(format, header.frequency() * sb.channelCount * 2 / 4)   // 约 0.25 秒缓冲
+                    val opened = openLine(format, header.frequency() * sb.channelCount * 2 / 4)   // 约 0.25 秒缓冲
+                    // openLine 在默认设备失败时会遍历所有 mixer，可能阻塞几百毫秒；
+                    // 这段时间里用户可能已经 seek / 切歌，旧线程不能再抢回 line 并改回 PLAYING。
+                    if (gen != generation) {
+                        try {
+                            opened.close()
+                        } catch (_: Exception) {
+                        }
+                        return
+                    }
+                    out = opened
                     line = out
                     if (state == State.PAUSED) {
                         out.stop()

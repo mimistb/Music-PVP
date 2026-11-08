@@ -132,14 +132,18 @@ public final class MatchTracker {
         if (roster != null) {
             for (PlayerIdentity player : roster) {
                 if (player == null) continue;
+                final boolean isLocal = localPlayerName != null && !localPlayerName.isEmpty()
+                        && player.name != null && player.name.equals(localPlayerName);
+                // 名字颜色是独立于显式队伍标签的一路证据：没有标签的玩家也要能提供
+                if (isLocal) {
+                    rosterColourOwnTeam = player.colorTeam;
+                }
                 final Team tagged = player.taggedTeam;
                 if (!tagged.known()) continue;
                 taggedPlayers++;
                 rosterTeamMask |= 1 << tagged.index();
-                if (localPlayerName != null && !localPlayerName.isEmpty()
-                        && player.name.equals(localPlayerName)) {
+                if (isLocal) {
                     rosterTaggedOwnTeam = tagged;
-                    rosterColourOwnTeam = player.colorTeam;
                 }
             }
         }

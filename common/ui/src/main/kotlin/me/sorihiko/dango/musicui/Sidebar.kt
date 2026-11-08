@@ -1,6 +1,6 @@
 package me.sorihiko.dango.musicui
 
-import me.sorihiko.dango.music.CoverCache
+import me.sorihiko.dango.music.LoginAccounts
 import me.sorihiko.dango.music.MusicScreen
 import me.sorihiko.dango.music.NeteaseApi
 import me.sorihiko.dango.party.ListenParty
@@ -62,7 +62,7 @@ internal class Sidebar(private val screen: MusicScreen) {
 
         // 搜索框：放大镜 + 输入
         searchRect = LayoutBounds(x, y, iw, 32f)
-        ui.card(searchRect, if (searchFocused) Theme.CARD_HOVER else Theme.CARD, 10f)
+        ui.panel(searchRect, 10f)
         if (searchFocused) ctx.drawShape(searchRect, ShapeStyle(Color(0f, 0f, 0f, 0f), 10f, 1f, RED))
         ctx.drawShape(LayoutBounds(x + 11f, y + 10f, 9f, 9f), ShapeStyle(Color(0f, 0f, 0f, 0f), 4.5f, 1.4f, Theme.TEXT_SECONDARY))
         ctx.drawShape(LayoutBounds(x + 18.5f, y + 18f, 4.5f, 1.6f), ShapeStyle(Theme.TEXT_SECONDARY, 0.8f))
@@ -108,7 +108,7 @@ internal class Sidebar(private val screen: MusicScreen) {
 
         // 歌单列表（底部留出按钮和账号的位置）
         val rowH = 30f
-        val footerH = 92f
+        val footerH = 150f
         listArea = LayoutBounds(side.x + 6f, y, side.width - 12f, side.bottom - footerH - y)
         val rows = max(1, (listArea.height / rowH).toInt())
         val list = Library.playlists
@@ -140,15 +140,24 @@ internal class Sidebar(private val screen: MusicScreen) {
         }
         ui.endClip()
         if (list.isEmpty()) {
-            val msg = if (Library.playlistsLoading) "加载中…" else if (NeteaseApi.loggedIn) "暂无歌单" else "登录后查看你的歌单"
-            ui.text(msg, x + 2f, listArea.y + 6f, 11f, Theme.TEXT_TERTIARY)
+            if (Library.playlistsLoading) {
+                // 首次读取歌单：骨架行 + 统一流光，加载完成后直接替换成真实列表
+                val skeletonRows = min(4, max(1, (listArea.height / 32f).toInt()))
+                for (i in 0 until skeletonRows) {
+                    ui.skeleton(LayoutBounds(x, listArea.y + i * 32f, iw, 24f), 8f)
+                }
+                ui.text("正在读取歌单…", x + 2f, listArea.y + skeletonRows * 32f + 4f, 10f, Theme.TEXT_TERTIARY)
+            } else {
+                val msg = if (NeteaseApi.loggedIn) "暂无歌单" else "登录后查看你的歌单"
+                ui.text(msg, x + 2f, listArea.y + 6f, 11f, Theme.TEXT_TERTIARY)
+            }
         }
 
         // 设置按钮（歌单会在打开播放器时自动刷新，不需要刷新按钮）
         val by = side.bottom - footerH + 8f
         val sb = LayoutBounds(x, by, iw, 32f)
         val on = page == Page.SETTINGS
-        ui.card(sb, if (on) RED.copy(a = 0.22f) else if (ui.hover(sb)) Theme.CARD_HOVER else Theme.CARD, 10f)
+        ui.panel(sb, 10f, active = on)
         if (on) ctx.drawShape(sb, ShapeStyle(Color(0f, 0f, 0f, 0f), 10f, 1f, RED.copy(a = 0.6f)))
         val sCol = if (on) RED else Theme.TEXT_PRIMARY
         val sLabel = "设置"
@@ -165,28 +174,109 @@ internal class Sidebar(private val screen: MusicScreen) {
         selTarget = newTarget
     }
 
+    /**
+     * 账号区：网易云 / QQ 音乐 / 酷狗三行登录态。
+     * 已登录的行点击即切换当前平台（复用本地令牌，不会再走扫码）；未登录的行点击打开登录弹窗。
+     */
     private fun drawAccount(side: LayoutBounds) {
-        val ub = LayoutBounds(side.x + 6f, side.bottom - 46f, side.width - 12f, 40f)
-        val av = LayoutBounds(ub.x + 6f, ub.y + 6f, 28f, 28f)
-        if (NeteaseApi.loggedIn) {
-            val aurl = NeteaseApi.avatarUrl
-            ui.drawCover(av, if (aurl.isNotEmpty()) CoverCache.get("u:${NeteaseApi.userId}", aurl) else null, 14f)
-            val who = NeteaseApi.nickname.ifEmpty { "已登录" }
-            val outW = ui.width("退出登录", 10f, Theme.FONT_MEDIUM)
-            ui.text(ui.trim(who, ub.right - outW - 18f - (av.right + 10f), 12f), av.right + 10f, ub.y + 14f, 12f, Theme.TEXT_PRIMARY)
-            val outB = LayoutBounds(ub.right - outW - 14f, ub.y + 10f, outW + 10f, 20f)
-            if (ui.hover(outB)) ui.card(outB, Theme.CARD_HOVER, 6f)
-            ui.text("退出登录", outB.x + 5f, outB.y + 6f, 10f, Theme.TEXT_TERTIARY, Theme.FONT_MEDIUM)
-            ui.hits += outB to {
-                NeteaseApi.logout()
-                Library.refreshAll()
+        val qq = LoginAccounts.qqAccount()
+        val kugou = LoginAccounts.kugouAccount()
+
+        fun loggedIn(provider: String): Boolean = when (provider) {
+            "netease" -> NeteaseApi.loggedIn
+            "qq" -> qq != null
+            else -> kugou != null
+        }
+
+        val stored = LoginAccounts.activePlatform()
+        // 记录的平台退出登录后自动回退到仍可用的账号，不写回配置
+        val active = when {
+            loggedIn(stored) -> stored
+            NeteaseApi.loggedIn -> "netease"
+            qq != null -> "qq"
+            kugou != null -> "kugou"
+            else -> stored
+        }
+
+        val entries = listOf(
+            Triple("netease", "网易云", NeteaseApi.nickname.ifEmpty { if (NeteaseApi.loggedIn) "已登录" else "未登录" }),
+            Triple("qq", "QQ音乐", qq?.display ?: "未登录"),
+            Triple("kugou", "酷狗", kugou?.display ?: "未登录"),
+        )
+
+        val x = side.x + 6f
+        val w = side.width - 12f
+        val top = side.bottom - 98f
+        val rowH = 28f
+        val gap = 2f
+
+        entries.forEachIndexed { i, entry ->
+            val provider = entry.first
+            val name = entry.second
+            val status = entry.third
+            val logged = loggedIn(provider)
+            val on = provider == active
+            val row = LayoutBounds(x, top + i * (rowH + gap), w, rowH)
+            val accent = when (provider) {
+                "netease" -> RED
+                "qq" -> Color.fromHex("#31C27C")
+                else -> Color.fromHex("#2AA6FF")
             }
-        } else {
-            if (ui.hover(ub)) ui.card(ub, Theme.CARD_HOVER, 10f)
-            ui.ctx.drawShape(av, ShapeStyle(Theme.TRACK, 14f))
-            ui.icon("?", av.x + 14f, av.y + 14f, 12f, Theme.TEXT_SECONDARY)
-            ui.text("登录网易云音乐", av.right + 10f, ub.y + 14f, 12f, RED, Theme.FONT_SEMIBOLD)
-            ui.hits += ub to { screen.login.open() }
+
+            if (on) {
+                ui.ctx.drawShape(row, ShapeStyle(Color(0f, 0f, 0f, 0f), 9f, 1f, RED.copy(a = 0.5f)))
+                // 左侧短竖条：和选中歌单的果冻块同一套强调色
+                ui.ctx.drawShape(LayoutBounds(row.x + 2f, row.y + 8f, 2f, row.height - 16f), ShapeStyle(RED, 1f))
+            } else if (ui.hover(row)) {
+                ui.card(row, Theme.CARD_HOVER, 9f)
+            }
+
+            val badge = LayoutBounds(row.x + 10f, row.y + 4f, 20f, 20f)
+            ui.ctx.drawShape(badge, ShapeStyle(accent.copy(a = 0.18f), 7f))
+            ui.text(
+                when (provider) {
+                    "netease" -> "N"
+                    "qq" -> "Q"
+                    else -> "K"
+                },
+                badge.x + 6.5f, badge.y + 4f, 10f, accent, Theme.FONT_SEMIBOLD,
+            )
+
+            val actionLabel = if (logged) "退出" else "登录"
+            val actionW = ui.width(actionLabel, 10f, Theme.FONT_MEDIUM) + 10f
+            val action = LayoutBounds(row.right - actionW - 4f, row.y + 4f, actionW, 20f)
+
+            val textW = action.x - 6f - (badge.right + 8f)
+            ui.text(name, badge.right + 8f, row.y + 4f, 11f,
+                if (logged) Theme.TEXT_PRIMARY else Theme.TEXT_SECONDARY, Theme.FONT_MEDIUM)
+            ui.text(ui.trim(status, textW, 9f), badge.right + 8f, row.y + 16f, 9f, Theme.TEXT_TERTIARY)
+
+            if (ui.hover(action)) ui.card(action, Theme.CARD_HOVER, 6f)
+            ui.text(actionLabel, action.x + 5f, action.y + 6f, 10f,
+                if (on) RED else Theme.TEXT_TERTIARY, Theme.FONT_MEDIUM)
+
+            // 行主体：已登录 = 切换平台（不重新扫码）；未登录 = 打开登录弹窗
+            val body = LayoutBounds(row.x, row.y, max(1f, action.x - row.x - 4f), row.height)
+            ui.hits += body to {
+                if (logged) {
+                    LoginAccounts.setActivePlatform(provider)
+                } else {
+                    LoginAccounts.setActivePlatform(provider)
+                    screen.login.open()
+                }
+            }
+            // 右侧小按钮：已登录 = 退出；未登录 = 登录
+            ui.hits += action to {
+                if (logged) {
+                    when (provider) {
+                        "netease" -> NeteaseApi.logout()
+                        else -> LoginAccounts.logout(provider)
+                    }
+                    Library.refreshAll()
+                } else {
+                    screen.login.open()
+                }
+            }
         }
     }
 

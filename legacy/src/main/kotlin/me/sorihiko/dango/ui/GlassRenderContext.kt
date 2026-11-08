@@ -61,6 +61,12 @@ class GlassRenderContext : GuiCanvas {
 
     override fun begin(captureBackdrop: Boolean, mouseX: Int, mouseY: Int) {
         snapshot = GlStateSnapshot()
+        // 画布是长生命周期对象：上一帧若在 push/pop 之间抛过异常，残留的裁剪 / 透明度 / 变换
+        // 会跨帧累积，最终让 pop 在空栈上抛 NoSuchElementException。每帧开始强制归零。
+        clipStack.clear()
+        opacityStack.clear()
+        transformStack.clear()
+        GL11.glDisable(GL11.GL_SCISSOR_TEST)
         GL20.glUseProgram(0)
         val b = backdrop ?: GlassBackdrop().also { backdrop = it }
         if (captureBackdrop) b.capture()
@@ -207,7 +213,12 @@ class GlassRenderContext : GuiCanvas {
         }
 
         val backdrop = this.backdrop
-        if (backdrop == null || !backdrop.ready) {
+        val blurEnabled = try {
+            me.sorihiko.dango.module.impls.music.NeteaseMusicModule.of()?.liquidBlur?.get() ?: true
+        } catch (_: Throwable) {
+            true
+        }
+        if (!blurEnabled || backdrop == null || !backdrop.ready) {
             drawShape(bounds, ShapeStyle(style.fallback, style.radius, 1f, Color(1f, 1f, 1f, 0.10f)))
             return
         }
@@ -261,7 +272,7 @@ class GlassRenderContext : GuiCanvas {
     }
 
     override fun popClip() {
-        clipStack.removeLast()
+        clipStack.removeLastOrNull()
 
         if (clipStack.isEmpty()) {
             GL11.glDisable(GL11.GL_SCISSOR_TEST)
@@ -289,7 +300,7 @@ class GlassRenderContext : GuiCanvas {
     }
 
     override fun popTransform() {
-        transformStack.removeLast()
+        transformStack.removeLastOrNull()
     }
 
     private fun getTransform(): Matrix4f {

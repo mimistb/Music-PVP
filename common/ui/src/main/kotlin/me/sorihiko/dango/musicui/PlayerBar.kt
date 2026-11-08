@@ -21,7 +21,7 @@ internal class PlayerBar(private val screen: MusicScreen, private val module: Ne
 
     fun draw(bar: LayoutBounds) {
         val ctx = ui.ctx
-        ui.card(bar, Theme.CARD, 16f)
+        ui.panel(bar, 16f, interactive = false)
         val t = MusicPlayer.current
 
         // 左：封面 + 歌名 / 歌手
@@ -47,7 +47,10 @@ internal class PlayerBar(private val screen: MusicScreen, private val module: Ne
         val cx = bar.x + bar.width / 2f
         val cy = bar.y + 25f
         fun btn(b: LayoutBounds) {
-            if (ui.hover(b)) ctx.drawShape(b, ShapeStyle(Theme.CARD_HOVER, b.height / 2f))
+            when {
+                ui.pressed(b) -> ctx.drawShape(b, ShapeStyle(Theme.CARD_PRESS, b.height / 2f))
+                ui.hover(b) -> ctx.drawShape(b, ShapeStyle(Theme.CARD_HOVER, b.height / 2f))
+            }
         }
         val playB = LayoutBounds(cx - 17f, cy - 17f, 34f, 34f)
         val prevB = LayoutBounds(cx - 58f - 14f, cy - 14f, 28f, 28f)
@@ -104,7 +107,16 @@ internal class PlayerBar(private val screen: MusicScreen, private val module: Ne
         val shuffleLabel = "随机播放"
         val sw = ui.width(shuffleLabel, 11f, Theme.FONT_MEDIUM) + 36f
         val shB = LayoutBounds(volRect.x - 40f - sw, vy - 13f, sw, 26f)
-        ui.card(shB, if (MusicPlayer.shuffle) RED.copy(a = 0.85f) else if (ui.hover(shB)) Theme.CARD_HOVER else Color(1f, 1f, 1f, 0.07f), 9f)
+        ui.card(
+            shB,
+            when {
+                MusicPlayer.shuffle -> RED.copy(a = if (ui.pressed(shB)) 0.72f else 0.85f)
+                ui.pressed(shB) -> Theme.CARD_PRESS
+                ui.hover(shB) -> Theme.CARD_HOVER
+                else -> Color(1f, 1f, 1f, 0.07f)
+            },
+            9f,
+        )
         ui.icon("⇄", shB.x + 13f, vy, 11f, Theme.TEXT_PRIMARY)
         ui.text(shuffleLabel, shB.x + 24f, vy - 11f * 0.39f - 0.5f, 11f, Theme.TEXT_PRIMARY, Theme.FONT_MEDIUM)
         ui.hits += shB to { module.toggleShuffle() }
@@ -123,11 +135,13 @@ internal class PlayerBar(private val screen: MusicScreen, private val module: Ne
     /** 点在进度条 / 音量条上就处理掉，返回 true */
     fun mouseDown(mx: Int, my: Int): Boolean {
         if (progRect.expand(0f, 6f).contains(mx, my)) {
+            ui.markPress(progRect)
             val dur = MusicPlayer.durationMs
             if (dur > 0) MusicPlayer.seek(((mx - progRect.x) / progRect.width * dur).toLong())
             return true
         }
         if (volRect.expand(6f, 8f).contains(mx, my)) {
+            ui.markPress(volRect)
             setVolumeAt(mx)
             return true
         }

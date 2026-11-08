@@ -60,7 +60,9 @@ public final class RosterStatsService {
     private final ArrayDeque<Job> queue = new ArrayDeque<>();
     private final HashMap<String, Job> discoveredPlayers = new HashMap<>();
     private final HashMap<String, Long> deduplicateUntil = new HashMap<>();
-    private final HashMap<String, BedWarsStats> statsCache = new HashMap<>();
+    // 访问序 LinkedHashMap：容量满时淘汰"最久没用过"的条目，而不是哈希桶里的任意一个
+    private final java.util.LinkedHashMap<String, BedWarsStats> statsCache =
+            new java.util.LinkedHashMap<>(16, 0.75f, true);
 
     private Job activeJob;
     private boolean activeValid;
@@ -271,6 +273,7 @@ public final class RosterStatsService {
 
         final BedWarsStats stats = parsed.stats;
         if (statsCache.size() >= MAXIMUM_CACHE_ENTRIES) {
+            // 访问序 map 的迭代器第一个就是最久未使用的条目
             final Iterator<String> oldest = statsCache.keySet().iterator();
             if (oldest.hasNext()) {
                 oldest.next();

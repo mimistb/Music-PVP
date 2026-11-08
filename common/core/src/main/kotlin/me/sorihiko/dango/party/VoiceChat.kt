@@ -554,13 +554,26 @@ object VoiceChat {
                 java.util.Arrays.fill(acc, 0)
                 // 每 20 ms 从每个人的抖动缓冲各取一帧，多人时逐样本相加
                 synchronized(bufferLock) {
-                    for ((uid, q) in buffers) {
-                        if (q.isEmpty()) continue
+                    // 用迭代器：某个 uid 的队列取空后连表项一起移除，
+                    // 否则成员进进出出时 buffers 只增不减，playLoop 每 20ms 都要遍历历史 uid
+                    val it = buffers.entries.iterator()
+                    while (it.hasNext()) {
+                        val entry = it.next()
+                        val uid = entry.key
+                        val q = entry.value
+                        if (q.isEmpty()) {
+                            it.remove()
+                            burstStart.remove(uid)
+                            continue
+                        }
                         // 先攒够 bufferMs 再开始播；说话时间太短（没攒够）也按到达时间强制放出
                         val start = burstStart[uid] ?: now
                         if (q.size < target && now - start < targetNanos) continue
                         val f = q.pollFirst() ?: continue
-                        if (q.isEmpty()) burstStart.remove(uid)
+                        if (q.isEmpty()) {
+                            it.remove()
+                            burstStart.remove(uid)
+                        }
                         for (i in 0 until SAMPLES_PER_FRAME) acc[i] += f[i].toInt()
                     }
                 }
@@ -601,7 +614,8 @@ object VoiceChat {
 
     /** 16-bit PCM → µ-law 8-bit（标准 G.711 算法） */
     private fun mulawEncode(pcm: Int): Byte {
-        var sample = pcm
+        // 先夹取再取反：-32768 直接取反会溢出回 -32768，导致编码出一个完全错误的字节
+        var sample = pcm.coerceIn(-32767, 32767)
         val sign = if (sample < 0) 0x80 else 0
         if (sample < 0) sample = -sample
         if (sample > ULAW_CLIP) sample = ULAW_CLIP

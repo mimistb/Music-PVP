@@ -60,6 +60,26 @@ interface Platform {
 
     /** 打开内置播放器 */
     fun openMusicScreen()
+
+    /**
+     * 弹出系统文件选择框挑一张本地图片（主界面背景用）；返回绝对路径，取消或不支持时返回 null。
+     */
+    fun pickImageFile(): String? = null
+
+    /**
+     * 异步版：弹出系统文件选择框，结果在主线程回调（取消或不支持时为 null）。
+     * 默认实现直接走同步版本；能弹原生对话框的平台应覆盖它，避免阻塞渲染线程。
+     */
+    fun pickImageFileAsync(onPicked: (String?) -> Unit) {
+        onPicked(pickImageFile())
+    }
+
+    /**
+     * 在设置页的预览区里渲染击杀图标。
+     * 坐标与尺寸都是窗口像素（原点左上角）；[preset] 是预设序号。
+     * 返回 false 表示当前平台不支持（预览区自行画占位）。
+     */
+    fun renderKillIconPreview(x: Int, y: Int, width: Int, height: Int, preset: Int): Boolean = false
 }
 
 /** yaw / pitch 和原版一致（角度） */

@@ -4,6 +4,7 @@ import me.sorihiko.dango.DangoClient
 import me.sorihiko.dango.DangoLogger
 import me.sorihiko.dango.DangoMusic
 import me.sorihiko.dango.events.TickEvent
+import me.sorihiko.dango.events.HudRenderEvent
 import me.sorihiko.dango.events.WorldRenderEndEvent
 
 /** Fabric / Forge 入口调用：启动和事件转发（两个加载器共用） */
@@ -59,6 +60,12 @@ object ModernDango {
         } finally {
             McCompat.popModelView()
         }
+    }
+
+    /** 原版 GUI 终点：HUD 组件在这里补画，保证位于最上层 */
+    fun hudRenderEnd() {
+        if (!started) return
+        DangoMusic.callEvent(HudRenderEvent(0f))
     }
 
     /** 原版开始画界面之前（26.x：我们的界面在这时画到它自己的贴图上） */

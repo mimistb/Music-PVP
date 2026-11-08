@@ -3,6 +3,7 @@ package me.sorihiko.dango.module.impls.music
 import me.sorihiko.dango.DangoClient
 import me.sorihiko.dango.DangoMusic
 import me.sorihiko.dango.event.EventHandler
+import me.sorihiko.dango.events.HudRenderEvent
 import me.sorihiko.dango.events.WorldRenderEndEvent
 import me.sorihiko.dango.gfx.CjkStyle
 import me.sorihiko.dango.lyrics.LyricLine
@@ -221,6 +222,10 @@ class LyricsModule : Module() {
     private var barG = 0xA7 / 255f
     private var barB = 0xC3 / 255f
     private var barColorNanos = 0L
+    // 正在播放 HUD 的拖动状态
+    private var nowDragging = false
+    private var nowDragDX = 0f
+    private var nowDragDY = 0f
     /** 暂停期间（歌词先隐藏，恢复播放时再出现） */
     private var wasPaused = false
     private val flash = TextFlash()
@@ -492,6 +497,15 @@ class LyricsModule : Module() {
             }
             if (nowPlaying.get() && s != null && !songCardCovers()) drawNowPlaying(s, lyrics)
         }
+    }
+
+    @EventHandler
+    fun renderHud(e: HudRenderEvent) {
+        if (!enabled || !nowPlaying.get()) return
+        val s = current ?: return
+        if (songCardCovers()) return
+        // 世界层已经画过一次；这里在原版 GUI 之后再补画一次，保证聊天栏等不会遮挡
+        DangoClient.gfx.guarded { drawNowPlaying(s, currentKey?.let { lyricsFor(it) }) }
     }
 
     private fun startFade(f: Floating) {
@@ -934,8 +948,31 @@ class LyricsModule : Module() {
         hud.begin()
         // 组件位置模块的微调（原版 GUI 像素，默认 0 时和原来完全一样）
         val layout = HudLayoutModule.of()
-        val x = 6 + (layout?.nowX?.value?.roundToInt() ?: 0)
-        val y = 6 + (layout?.nowY?.value?.roundToInt() ?: 0)
+        var x = 6 + (layout?.nowX?.value?.roundToInt() ?: 0)
+        var y = 6 + (layout?.nowY?.value?.roundToInt() ?: 0)
+        // 打开聊天栏后可直接拖动「正在播放」；位置写回 HudLayout 的微调值
+        if (layout != null) {
+            val platform = DangoClient.platform
+            val mx = platform.mouseX.toFloat() / platform.guiScale
+            val my = platform.mouseY.toFloat() / platform.guiScale
+            if (!platform.chatOpen) {
+                nowDragging = false
+            } else if (platform.isMouseDown(0)) {
+                if (!nowDragging && mx in x.toFloat()..(x + 180f) && my in y.toFloat()..(y + 34f)) {
+                    nowDragging = true
+                    nowDragDX = mx - x
+                    nowDragDY = my - y
+                }
+                if (nowDragging) {
+                    x = (mx - nowDragDX).roundToInt().coerceIn(0, 4000)
+                    y = (my - nowDragDY).roundToInt().coerceIn(0, 4000)
+                    layout.nowX.setValue((x - 6).toFloat())
+                    layout.nowY.setValue((y - 6).toFloat())
+                }
+            } else {
+                nowDragging = false
+            }
+        }
         val coverSize = 32
 
         // 封面（换歌时淡入）；还没加载到时画一个占位方块

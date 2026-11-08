@@ -8,14 +8,17 @@ import me.sorihiko.dango.module.Module
 import me.sorihiko.dango.module.impls.music.AutoLyricsModule
 import me.sorihiko.dango.module.impls.music.BedWarsModule
 import me.sorihiko.dango.module.impls.music.DynamicIslandModule
+import me.sorihiko.dango.module.impls.music.ChatTranslateSettingsModule
 import me.sorihiko.dango.module.impls.music.FpsToolsModule
 import me.sorihiko.dango.module.impls.music.HitColorHudModule
 import me.sorihiko.dango.module.impls.music.HudInfoModule
 import me.sorihiko.dango.module.impls.music.HudLayoutModule
 import me.sorihiko.dango.module.impls.music.KeystrokesHudModule
+import me.sorihiko.dango.module.impls.music.KillIconHudModule
 import me.sorihiko.dango.module.impls.music.LyricPalette
 import me.sorihiko.dango.module.impls.music.Lyrics2DModule
 import me.sorihiko.dango.module.impls.music.LyricsModule
+import me.sorihiko.dango.module.impls.music.MenuBackgroundModule
 import me.sorihiko.dango.module.impls.music.NeteaseMusicModule
 import me.sorihiko.dango.module.impls.music.SongCardModule
 import me.sorihiko.dango.module.impls.music.TabStatsHudModule
@@ -42,7 +45,7 @@ import kotlin.math.roundToInt
 internal class SettingsPage(private val screen: MusicScreen, private val module: NeteaseMusicModule) {
     private val ui = screen.ui
 
-    private enum class Ctl { TOGGLE, SLIDER, SWATCH, KEY, TEXT }
+    private enum class Ctl { TOGGLE, SLIDER, SWATCH, KEY, TEXT, BUTTON }
 
     /**
      * 设置页统一栅格：卡片、行、控件、段标题、页签全部按这套尺寸排布，避免各处散落的魔数。
@@ -56,19 +59,19 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
         /** 卡片内左右内边距 */
         const val CARD_PAD = 14f
         /** 卡片标题栏高度（与行高一致，纵向节奏统一） */
-        const val HEAD_H = 40f
+        const val HEAD_H = 38f
         /** 每行（标签 + 描述 + 控件）的高度 */
-        const val ROW_H = 40f
+        const val ROW_H = 38f
         /** 卡片底部留白 */
         const val CARD_BOTTOM = 8f
         /** 同列相邻卡片间距 */
-        const val CARD_GAP = 14f
+        const val CARD_GAP = 10f
         /** 段与段之间的间距（比卡片间距大一档，形成层次） */
-        const val SECTION_GAP = 20f
+        const val SECTION_GAP = 16f
         /** 段标题高度：段名 + 通栏分隔线 + 与首张卡片的空隙 */
-        const val SECTION_H = 34f
+        const val SECTION_H = 30f
         /** 行内标签与描述的中线间距 */
-        const val LINE_GAP = 15f
+        const val LINE_GAP = 14f
         /** 标签列与控件列之间至少留出的空隙 */
         const val LABEL_GAP = 14f
         /** 卡片标题与副标题之间的空隙 */
@@ -114,6 +117,8 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
         val key: String, val label: String, val desc: String, val value: Any, val ctl: Ctl,
         val dep: BooleanValue?, val fmt: (Any) -> String, val scale: Float = 1f,
         val secret: Boolean = false, val placeholder: String = "输入名字",
+        /** 按钮类行（Ctl.BUTTON）点击时执行；为空则不可点 */
+        val action: (() -> Unit)? = null,
     )
 
     /**
@@ -124,10 +129,19 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
     private class Group(
         val title: String, val sub: String, val owner: Module, val toggle: Boolean, val rows: List<Row>,
         val section: String = "", val toggleValue: BooleanValue? = null,
+        /** 过长分组被拆成多张卡时，所有分片共用同一个键（展开状态 / 右键收起都联动） */
+        val keyOverride: String? = null,
+        /** 行列表下方的自定义区域高度（击杀图标预览 / 参数管理） */
+        val customH: Float = 0f,
+        /** 自定义区域绘制：参数是(区域, 裁剪区) */
+        val custom: ((LayoutBounds, LayoutBounds) -> Unit)? = null,
     )
 
     /** 显示成百分比的选项 */
-    private val percentKeys = setOf("volume", "glowRadius", "posX", "posY", "barWidth", "alpha")
+    private val percentKeys = setOf(
+        "volume", "soundVolume", "glowRadius", "posX", "posY", "barWidth", "alpha",
+        "fpsX", "fpsY", "pingX", "pingY", "clockX", "clockY", "cpsX", "cpsY",
+    )
 
     /** 伤害色调：红 / 橙 / 黄 / 绿 / 青 / 蓝 / 紫 */
     private val paletteSwatches = HitColorHudModule.paletteSwatches()
@@ -170,6 +184,81 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
 
     private val tabs: List<List<Group>> by lazy { buildSettings() }
 
+    // 按列数拆分过长分组的结果缓存：只随页签 / 列数变化重算，避免每帧新建对象
+    private var splitTab = -1
+    private var splitCols = -1
+    private var splitResult: List<Group> = emptyList()
+
+    /**
+     * 取当前页签的卡片列表。
+     *
+     * 设置页是两列瀑布流，如果某段里只有一张超高卡片 + 一张小卡片，
+     * 小卡片所在列会在下方留下大片空白（截图里的问题）。
+     * 这里把“行数明显超过单列目标”的分组按行拆成几张连续卡片，
+     * 再交给瀑布流按最短列摆放，两列就能被填平；拆出来的卡片共用原分组的键，
+     * 展开状态与右键收起保持联动。
+     */
+    private fun groupsFor(tab: Int, cols: Int): List<Group> {
+        if (tab == splitTab && cols == splitCols) return splitResult
+        splitTab = tab
+        splitCols = cols
+        val source = tabs[tab]
+        if (cols <= 1) {
+            splitResult = source
+            return source
+        }
+        val out = ArrayList<Group>(source.size)
+        var i = 0
+        while (i < source.size) {
+            val section = source[i].section
+            var j = i
+            while (j < source.size && source[j].section == section) j++
+            val slice = source.subList(i, j)
+            if (slice.size <= 1) {
+                out.addAll(slice)
+                i = j
+                continue
+            }
+            val totalRows = slice.sumOf { it.rows.size }
+            // 目标：每张卡约占单列高度的 2/3，多出来的高度由瀑布流另一列吸收
+            val limit = max(6, (totalRows * 2f / (cols * 3f)).toInt())
+            for (g in slice) out.addAll(splitGroup(g, limit))
+            i = j
+        }
+        splitResult = out
+        return out
+    }
+
+    private fun splitGroup(g: Group, limit: Int): List<Group> {
+        if (g.rows.size <= limit) return listOf(g)
+        val key = groupKey(g)
+        val parts = (g.rows.size + limit - 1) / limit
+        val size = (g.rows.size + parts - 1) / parts
+        val out = ArrayList<Group>(parts)
+        var start = 0
+        var index = 0
+        while (start < g.rows.size) {
+            val end = (start + size).coerceAtMost(g.rows.size)
+            val first = index == 0
+            out.add(
+                Group(
+                    title = if (first) g.title else "${g.title}（续）",
+                    sub = if (first) g.sub else "同一分组，设置与上一张卡片共用",
+                    owner = g.owner,
+                    // 只保留第一张的总开关，续卡不重复画开关
+                    toggle = g.toggle && first,
+                    rows = g.rows.subList(start, end),
+                    section = g.section,
+                    toggleValue = if (first) g.toggleValue else null,
+                    keyOverride = key,
+                )
+            )
+            start = end
+            index++
+        }
+        return out
+    }
+
     /** 本帧画了设置列表的区域（滚轮用），没画就是空的 */
     var area = LayoutBounds()
     /** 设置页滚动位置：关掉界面再打开接着上次的位置 */
@@ -185,6 +274,15 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
     private var editRow: Row? = null
     private val edit = TextInput(StringValue.MAX_LENGTH)
     private var editRect = LayoutBounds()
+
+    // 参数管理：档案名输入、档案列表缓存与操作结果提示
+    private val profileName = TextInput(40)
+    private var profileEditing = false
+    private var profileNameRect = LayoutBounds()
+    private var profileNames: List<String> = emptyList()
+    private var profileNamesAt = 0L
+    private var profileStatus = ""
+    private var profileStatusAt = 0L
 
     // 正在录快捷键的那一项，以及本帧所有快捷键按钮的区域（点别处就取消录制）
     var bindingKey: IntValue? = null
@@ -202,7 +300,7 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
 
     /** 分组的固定键：段名 + 标题，和界面上的卡片一一对应 */
     private fun groupKey(g: Group): String =
-        if (g.section.isEmpty()) g.title else "${g.section}/${g.title}"
+        g.keyOverride ?: if (g.section.isEmpty()) g.title else "${g.section}/${g.title}"
 
     /** 当前显示进度：0 = 完全收起，1 = 完全展开；首次见到直接取持久化状态，不做假动画 */
     private fun groupProgress(key: String): Float {
@@ -245,7 +343,11 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
         pos = ui.approach(pos, target, 70f)
         // 滑条：按住拖动
         if (dragValue != null) {
-            if (DangoClient.platform.isMouseDown(0)) applyDrag() else dragValue = null
+            if (DangoClient.platform.isMouseDown(0)) applyDrag()
+            else {
+                dragValue = null
+                persist()
+            }
         }
     }
 
@@ -267,6 +369,19 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
 
     fun stopDrag() {
         dragValue = null
+        persist()
+    }
+
+    /**
+     * 交互结束立刻写盘。关闭界面 / 松手 / 回车这类明确的“操作完成”时刻调用，
+     * 不依赖 2 秒一次的后台自动保存，避免玩家秒关游戏时丢掉最后一次改动。
+     */
+    private fun persist() {
+        try {
+            DangoMusic.instance.configManager.saveIfChanged()
+        } catch (_: Throwable) {
+            // 写盘失败不应该影响界面操作
+        }
     }
 
     // ---------------------------------------------------------------- 数值输入
@@ -308,18 +423,22 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
     fun commitEdit() {
         val r = editRow ?: return
         editRow = null
-        val value = r.value
-        val text = edit.text.trim()
-        if (value is StringValue) {
-            value.set(text)
-            // 查询玩家：回车即发起一次手动查询；空名字不请求
-            if (r.key == "queryName" && text.isNotEmpty()) BedWarsData.queryRequest = text
-            return
-        }
-        val n = text.replace(',', '.').toFloatOrNull() ?: return
-        when (value) {
-            is IntValue -> value.setValue((n / r.scale).roundToInt())
-            is FloatValue -> value.setValue(n / r.scale)
+        try {
+            val value = r.value
+            val text = edit.text.trim()
+            if (value is StringValue) {
+                value.set(text)
+                // 查询玩家：回车即发起一次手动查询；空名字不请求
+                if (r.key == "queryName" && text.isNotEmpty()) BedWarsData.queryRequest = text
+                return
+            }
+            val n = text.replace(',', '.').toFloatOrNull() ?: return
+            when (value) {
+                is IntValue -> value.setValue((n / r.scale).roundToInt())
+                is FloatValue -> value.setValue(n / r.scale)
+            }
+        } finally {
+            persist()
         }
     }
 
@@ -327,6 +446,7 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
     fun onClickElsewhere(hit: Hit?) {
         if (bindingKey != null && (hit == null || hit.first !in keyButtons)) bindingKey = null
         if (editRow != null && (hit == null || hit.first != editRect.intersect(area))) commitEdit()
+        if (profileEditing && (hit == null || hit.first != profileNameRect.intersect(area))) profileEditing = false
     }
 
     // ---------------------------------------------------------------- 选项列表
@@ -363,7 +483,8 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
                     v is BooleanValue -> Ctl.TOGGLE
                     v is StringValue -> Ctl.TEXT
                     k.endsWith("Color") -> Ctl.SWATCH
-                    k == "openKey" || (k.startsWith("key") && v is IntValue) -> Ctl.KEY
+                    // 按键类 IntValue：openKey / voiceKey 等（名字以 Key 结尾），必须走录制按钮而不是滑条
+                    v is IntValue && k.endsWith("Key") -> Ctl.KEY
                     v is IntValue || v is FloatValue -> Ctl.SLIDER
                     else -> return@mapNotNull null
                 }
@@ -610,7 +731,57 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
                 "armorLowThreshold" to { v: Any -> "${(v as IntValue).value}%" },
             ),
         )
+        val killIcon = Src(mm.get(KillIconHudModule::class.java), fmts = mapOf(
+            "soundVolume" to ::percent,
+            "presetIndex" to { v: Any ->
+                val i = (v as IntValue).value.coerceIn(0, KillIconHudModule.presetLabels.size - 1)
+                KillIconHudModule.presetLabels.getOrElse(i) { "第 ${i + 1} 套" }
+            },
+            "anchorXPercent" to { v: Any -> "${(v as FloatValue).value.roundToInt()}%" },
+            "anchorYPercent" to { v: Any -> "${(v as FloatValue).value.roundToInt()}%" },
+            "size" to { v: Any -> "${(v as FloatValue).value.roundToInt()} px" },
+        ))
+        val languageFmt: (Any) -> String = { v: Any ->
+            ChatTranslateSettingsModule.LANGUAGE_NAMES[
+                (v as IntValue).value.coerceIn(0, ChatTranslateSettingsModule.LANGUAGE_NAMES.size - 1)
+            ]
+        }
+        // 接收 / 发送两条链路的目标语言分开显示、分开配置
+        val chatTranslate = Src(mm.get(ChatTranslateSettingsModule::class.java), fmts = mapOf(
+            "incomingLanguage" to languageFmt,
+            "outgoingLanguage" to languageFmt,
+        ))
+        // 主标题界面背景：路径 + 浏览按钮 + 不透明度 / 填充模式 / 暗色遮罩
+        val menuBg = Src(mm.get(MenuBackgroundModule::class.java), fmts = mapOf(
+            "opacity" to { v: Any -> "${(v as IntValue).value}%" },
+            "dim" to { v: Any -> "${(v as IntValue).value}%" },
+            "fillMode" to { v: Any ->
+                arrayOf("拉伸", "居中", "平铺")[(v as IntValue).value.coerceIn(0, 2)]
+            },
+        ))
+        val menuBgRows = menuBg.take().toMutableList()
+        menuBgRows.add(
+            0,
+            Row(
+                "pickMenuBg", "选择图片", "打开系统文件选择框（png / jpg / bmp）",
+                menuBg.m, Ctl.BUTTON, null, { "浏览" },
+                action = {
+                    // 异步：原生文件框在独立线程弹出，不会卡住游戏渲染循环
+                    DangoClient.platform.pickImageFileAsync { picked ->
+                        if (!picked.isNullOrBlank()) {
+                            (menuBg.all["path"]?.second as? StringValue)?.set(picked)
+                            persist()
+                        }
+                    }
+                },
+            ),
+        )
+        // 界面段只保留显示效果开关
         val music = listOf(
+            Group("参数管理", "档案 · 一键导入导出", player.m, false, emptyList(),
+                section = "参数管理", customH = ProfileMetrics.HEIGHT, custom = ::drawProfileManager),
+            Group("主界面背景", "图片 · 不透明度 · 填充 · 遮罩", menuBg.m, true, menuBgRows, section = "界面"),
+            Group("界面", "液态模糊 · 显示效果", player.m, true, player.take(listOf("liquidBlur")), section = "界面"),
             Group("播放器", "播放", player.m, false, player.take(listOf("volume")), section = "音乐"),
             Group("快捷键", "点击后按下按键 · Esc 或退格键设为无", player.m, false, player.take(), section = "音乐"),
             Group("歌曲卡片", "悬浮层", card.m, true, card.take(), section = "音乐"),
@@ -636,6 +807,9 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
                 "mpSharpness", "mpCrit", "mpAlwaysCrit", "mpAlwaysSharpness", "mpSpecial", "mpKillEffect",
                 "particlesModifier", "pmKeepBlock",
             )), section = "PVP · 打击"),
+            Group("击杀图标预览", "实时预览 · ◀ ▶ 切换预设", killIcon.m, false, emptyList(),
+                section = "PVP · 打击", customH = KillPreviewMetrics.HEIGHT, custom = ::drawKillIconPreview),
+            Group("击杀图标", "42 套预设 · 屏幕锚点", killIcon.m, true, killIcon.take(), section = "PVP · 打击"),
             Group("视角与画面", "缩放 · 迷雾 · 名牌 · 防砍动画", fps.m, false, fps.take(listOf(
                 "smoothZoom", "keyZoom", "zoomSmoothCamera", "zoomSmoothMouse", "zoomWheel", "zoomSpeed", "zoomScale",
                 "freeLook", "keyFreeLook", "freeLookSens", "customFog", "fogColor", "fogLiquids",
@@ -688,6 +862,7 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
                 "adSessionEnabled", "adSessionIdleSeconds", "adSessionKeepWinstreak", "adSessionMaxMinutes",
                 "adSessionAvgRoundSeconds",
             )), section = "PVP · 聊天与护甲"),
+            Group("聊天翻译", "微软翻译 · ✎ 快捷按钮 · 发送前翻译", chatTranslate.m, true, chatTranslate.take(), section = "PVP · 聊天与护甲"),
             Group("护甲与点击速度", "各自独立一块显示", fps.m, false, fps.take(listOf(
                 "armorDisplay", "armorShowSlots", "armorShowEmpty", "armorPercent", "armorOnlyDamaged",
                 "armorLowThreshold", "armorLowWarn",
@@ -711,7 +886,7 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
             page.bottom - (page.y + Metrics.HEADER_H),
         )
         area = view
-        val groups = tabs[ScreenState.settingsTab.coerceIn(0, tabs.size - 1)]
+        val tabIndex = ScreenState.settingsTab.coerceIn(0, tabs.size - 1)
 
         // 按段分组：每段先画一条占满整行的段标题，段内再按两列瀑布流排卡片。
         // 不同分工的模块不会并排混在一起，段与段之间有明确的分割。
@@ -721,8 +896,13 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
         val headH = Metrics.HEAD_H
         // 内容右缘统一让出滚动条余量，左缘与页面标题共用 page.x 这条基准线
         val frameW = (view.width - Metrics.RIGHT_GUTTER).coerceAtLeast(0f)
-        val cols = if (frameW >= 560f) 2 else 1
+        val cols = when {
+            frameW >= 1200f -> 3
+            frameW >= 560f -> 2
+            else -> 1
+        }
         val colW = (frameW - gap * (cols - 1)) / cols
+        val groups = groupsFor(tabIndex, cols)
 
         val sectionNames = mutableListOf<String>()
         val sectionGroups = mutableListOf<MutableList<Group>>()
@@ -743,17 +923,26 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
         for (si in sectionGroups.indices) {
             sectionTop[si] = y
             if (sectionNames[si].isNotEmpty()) y += Metrics.SECTION_H
+            // 第一遍：按“目标展开状态”的高度决定每张卡属于哪一列（动画期间列分配不变，卡片不会横向跳）
+            val list = sectionGroups[si]
+            val assign = IntArray(list.size)
+            val targetY = FloatArray(cols)
+            for ((i, g) in list.withIndex()) {
+                var c = 0
+                for (k in 1 until cols) {
+                    if (targetY[k] < targetY[c]) c = k
+                }
+                assign[i] = c
+                val slotOpen = if (UiPrefs.isGroupOpen(groupKey(g))) 1f else 0f
+                targetY[c] += headH + (g.rows.size * rowH + g.customH) * slotOpen + Metrics.CARD_BOTTOM + gap
+            }
+            // 第二遍：同一列内按动画高度顺排，展开 / 收起时下方卡片平滑跟随
             val colY = FloatArray(cols)
-            var idx = 0
-            for (g in sectionGroups[si]) {
-                // 卡片高度跟着展开进度变化：收起时只剩标题栏
+            for ((i, g) in list.withIndex()) {
                 val open = groupProgress(groupKey(g))
-                val h = headH + g.rows.size * rowH * open + Metrics.CARD_BOTTOM
-                // 列固定轮转：动画过程中列不会被重排，卡片不会横向跳
-                val c = idx % cols
-                placed += Placed(g, c, y + colY[c], h, open)
-                colY[c] += h + gap
-                idx++
+                val h = headH + (g.rows.size * rowH + g.customH) * open + Metrics.CARD_BOTTOM
+                placed += Placed(g, assign[i], y + colY[assign[i]], h, open)
+                colY[assign[i]] += h + gap
             }
             y += (colY.maxOrNull() ?: 0f) - gap + sectionGap
         }
@@ -799,15 +988,18 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
             page.right - Metrics.RIGHT_GUTTER - barW, page.y + Metrics.TAB_PAD,
             barW, Metrics.TAB_H,
         )
-        ui.card(bar, Theme.CARD, 11f)
+        ui.panel(bar, 11f, interactive = false)
         names.forEachIndexed { i, n ->
             val b = LayoutBounds(
                 bar.x + Metrics.TAB_PAD + i * Metrics.TAB_W, bar.y + Metrics.TAB_PAD,
                 Metrics.TAB_W, Metrics.TAB_H - Metrics.TAB_PAD * 2,
             )
             val on = i == ScreenState.settingsTab
-            if (on) ui.ctx.drawShape(b, ShapeStyle(RED, Metrics.TAB_RADIUS))
-            else if (ui.hover(b)) ui.card(b, Theme.CARD_HOVER, Metrics.TAB_RADIUS)
+            when {
+                on -> ui.ctx.drawShape(b, ShapeStyle(RED, Metrics.TAB_RADIUS))
+                ui.pressed(b) -> ui.card(b, Theme.CARD_PRESS, Metrics.TAB_RADIUS)
+                ui.hover(b) -> ui.card(b, Theme.CARD_HOVER, Metrics.TAB_RADIUS)
+            }
             val w = ui.width(n, 12f, Theme.FONT_SEMIBOLD)
             ui.text(n, b.x + (b.width - w) / 2f, Metrics.textY(b.y + b.height / 2f, 12f) - 0.5f, 12f,
                 if (on) Theme.TEXT_PRIMARY else Theme.TEXT_SECONDARY, Theme.FONT_SEMIBOLD)
@@ -834,8 +1026,8 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
 
     private fun drawGroup(b: LayoutBounds, g: Group, clip: LayoutBounds, rowH: Float, headH: Float, open: Float) {
         val ctx = ui.ctx
-        // 每张卡片加一圈很淡的描边，和相邻模块区分开
-        ctx.drawShape(b, ShapeStyle(Color(1f, 1f, 1f, 0.05f), 14f, 1f, Color(1f, 1f, 1f, 0.07f)))
+        // 每张卡片统一玻璃材质：淡填充 + 1px 描边，和相邻模块区分开
+        ui.panel(b, 14f, interactive = false)
         val x = b.x + Metrics.CARD_PAD
         val iw = b.width - Metrics.CARD_PAD * 2
         // 标题栏内部元素统一按标题栏中线居中
@@ -852,10 +1044,16 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
             )
             val v = g.toggleValue
             if (v != null) {
-                ui.toggleSwitch(box, v.get(), clip) { v.toggle() }
+                ui.toggleSwitch(box, v.get(), clip) {
+                    v.toggle()
+                    persist()
+                }
             } else {
                 val m = g.owner
-                ui.toggleSwitch(box, m.enabled, clip) { m.enabled = !m.enabled }
+                ui.toggleSwitch(box, m.enabled, clip) {
+                    m.enabled = !m.enabled
+                    persist()
+                }
             }
         }
         // 收起时提示一下操作方式（右键）；右缘与总开关保持固定间距
@@ -881,12 +1079,26 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
         var y = bodyTop
         val moduleOff = !g.owner.enabled
         for (r in g.rows) {
-            ctx.drawShape(LayoutBounds(x, y, iw, 1f), ShapeStyle(Color(1f, 1f, 1f, 0.06f)))
-            val dim = moduleOff || (r.dep != null && !r.dep.get())
-            if (dim) ctx.pushOpacity(0.4f)
-            drawRow(LayoutBounds(x, y, iw, rowH), r, bodyClip)
-            if (dim) ctx.popOpacity()
+            // 行级裁剪：卡片很长时，滚动到视口外的行直接跳过绘制
+            if (y >= bodyClip.bottom) break
+            if (y + rowH >= bodyClip.y) {
+                ctx.drawShape(LayoutBounds(x, y, iw, 1f), ShapeStyle(Color(1f, 1f, 1f, 0.06f)))
+                val dim = moduleOff || (r.dep != null && !r.dep.get())
+                if (dim) ctx.pushOpacity(0.4f)
+                val hitBase = ui.hits.size
+                drawRow(LayoutBounds(x, y, iw, rowH), r, bodyClip)
+                if (dim) {
+                    ctx.popOpacity()
+                    // 置灰行只做展示：把 drawRow 刚登记的点击热区丢掉，避免用户改到"不可用"的值
+                    while (ui.hits.size > hitBase) ui.hits.removeAt(ui.hits.size - 1)
+                }
+            }
             y += rowH
+        }
+        // 行列表下方的自定义区域（击杀图标实时预览 / 参数管理）
+        val custom = g.custom
+        if (custom != null && g.customH > 0f && y < bodyClip.bottom) {
+            custom.invoke(LayoutBounds(x, y, iw, g.customH), bodyClip)
         }
         ctx.popOpacity()
         // ui 只有一层 scissor：画完卡片内容后恢复外层的页面裁剪
@@ -904,6 +1116,7 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
             }
             Ctl.KEY -> Metrics.KEY_W
             Ctl.TEXT -> Metrics.FIELD_W
+            Ctl.BUTTON -> Metrics.KEY_W
         }
         val textW = b.width - ctlW - Metrics.LABEL_GAP
         val cy = b.y + b.height / 2f
@@ -920,7 +1133,10 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
                 ui.toggleSwitch(
                     LayoutBounds(cx, cy - Metrics.TOGGLE_H / 2f, Metrics.TOGGLE_W, Metrics.TOGGLE_H),
                     v.get(), clip,
-                ) { v.toggle() }
+                ) {
+                    v.toggle()
+                    persist()
+                }
             }
             Ctl.SLIDER -> drawSlider(r, clip, cx, cy)
             Ctl.SWATCH -> {
@@ -937,11 +1153,25 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
                     if (col.r + col.g + col.b < 0.5f) {
                         ui.ctx.drawShape(sb, ShapeStyle(Color(0f, 0f, 0f, 0f), 8f, 1f, Color(1f, 1f, 1f, 0.45f)))
                     }
-                    ui.hits += sb.expand(4f, 4f).intersect(clip) to { v.setValue(i) }
+                    ui.hits += sb.expand(4f, 4f).intersect(clip) to {
+                        v.setValue(i)
+                        persist()
+                    }
                 }
             }
             Ctl.KEY -> drawKeyButton(r.value as IntValue, clip, cx, cy)
             Ctl.TEXT -> drawTextField(r, clip, cx, cy)
+            Ctl.BUTTON -> {
+                val bb = LayoutBounds(cx, cy - Metrics.KEY_H / 2f, Metrics.KEY_W, Metrics.KEY_H)
+                ui.card(bb, if (ui.hover(bb)) Theme.CARD_HOVER else Theme.CARD, 7f)
+                val s = r.fmt(r.value)
+                ui.text(
+                    s, bb.x + (bb.width - ui.width(s, 11f, Theme.FONT_SEMIBOLD)) / 2f,
+                    Metrics.textY(cy, 11f) - 0.5f, 11f, Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD,
+                )
+                val action = r.action
+                if (action != null) ui.hits += bb.intersect(clip) to action
+            }
         }
     }
 
@@ -1041,6 +1271,230 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
         ui.hits += hb to { bindingKey = if (bindingKey === v) null else v }
     }
 
+    // ---------------------------------------------------------------- 击杀图标预览 / 参数管理
+
+    /** 击杀图标预览区尺寸 */
+    private object KillPreviewMetrics {
+        const val HEIGHT = 150f
+        const val HEAD = 30f
+        const val ARROW = 26f
+    }
+
+    /** 参数管理卡片尺寸（3 行档案 + 输入行 + 底部操作行） */
+    private object ProfileMetrics {
+        const val HEIGHT = 194f
+        const val FIELD_H = 26f
+        const val ROW_H = 28f
+        const val LIST_ROWS = 3
+        const val BUTTON_W = 72f
+    }
+
+    /**
+     * 击杀图标实时预览：顶部 ◀ 预设名 ▶，下方留出一块区域交给平台层用真实渲染器画图标。
+     * 平台不支持时画一行提示，不会空着。
+     */
+    private fun drawKillIconPreview(b: LayoutBounds, clip: LayoutBounds) {
+        val ctx = ui.ctx
+        val module = try {
+            DangoMusic.instance.moduleManager.get(KillIconHudModule::class.java)
+        } catch (_: Throwable) {
+            return
+        }
+        ctx.drawShape(b, ShapeStyle(Color(0f, 0f, 0f, 0.30f), 10f))
+        val labels = KillIconHudModule.presetLabels
+        val count = max(1, labels.size)
+        val idx = module.presetIndex.value.coerceIn(0, count - 1)
+        val headCy = b.y + KillPreviewMetrics.HEAD / 2f
+
+        val prev = LayoutBounds(b.x + 8f, headCy - KillPreviewMetrics.ARROW / 2f, KillPreviewMetrics.ARROW, KillPreviewMetrics.ARROW)
+        val next = LayoutBounds(b.right - 8f - KillPreviewMetrics.ARROW, prev.y, KillPreviewMetrics.ARROW, KillPreviewMetrics.ARROW)
+        drawArrow(prev, "◀", clip) {
+            module.presetIndex.setValue((idx - 1 + count) % count)
+            persist()
+        }
+        drawArrow(next, "▶", clip) {
+            module.presetIndex.setValue((idx + 1) % count)
+            persist()
+        }
+        val name = labels.getOrNull(idx) ?: "第 ${idx + 1} 套"
+        val title = "第 ${idx + 1}/$count 套 · $name"
+        val shownTitle = ui.trim(title, b.width - KillPreviewMetrics.ARROW * 2f - 24f, 11f, Theme.FONT_SEMIBOLD)
+        val tw = ui.width(shownTitle, 11f, Theme.FONT_SEMIBOLD)
+        ui.text(
+            shownTitle,
+            b.x + (b.width - tw) / 2f, Metrics.textY(headCy, 11f) - 0.5f, 11f, Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD,
+        )
+
+        val area = LayoutBounds(b.x + 8f, b.y + KillPreviewMetrics.HEAD, b.width - 16f,
+            b.height - KillPreviewMetrics.HEAD - 6f)
+        ctx.drawShape(area, ShapeStyle(Color(1f, 1f, 1f, 0.035f), 8f))
+        val px = (area.x * ui.scale).toInt()
+        val py = (area.y * ui.scale).toInt()
+        val pw = (area.width * ui.scale).toInt()
+        val ph = (area.height * ui.scale).toInt()
+        val drawn = try {
+            // 多套一层裁剪，避免图标动画的光晕溢出预览框
+            ctx.pushClip(area)
+            try {
+                DangoClient.platform.renderKillIconPreview(px, py, pw, ph, idx)
+            } finally {
+                ctx.popClip()
+            }
+        } catch (_: Throwable) {
+            false
+        }
+        if (!drawn) {
+            val hint = "当前平台不支持实时预览"
+            ui.text(hint, area.x + (area.width - ui.width(hint, 10f)) / 2f, Metrics.textY(area.y + area.height / 2f, 10f),
+                10f, Theme.TEXT_TERTIARY)
+        }
+    }
+
+    private fun drawArrow(b: LayoutBounds, glyph: String, clip: LayoutBounds, action: () -> Unit) {
+        ui.card(b, if (ui.hover(b)) Theme.CARD_HOVER else Theme.CARD, 7f)
+        ui.icon(glyph, b.x + b.width / 2f, b.y + b.height / 2f, 11f, Theme.TEXT_PRIMARY)
+        ui.hits += b.intersect(clip) to action
+    }
+
+    /**
+     * 参数管理：档案名输入 + 保存、档案列表（载入 / 删除）、一键导出 / 导入。
+     * 全部操作走 [me.sorihiko.dango.config.ConfigManager]，与自动存盘共用同一份配置。
+     */
+    private fun drawProfileManager(b: LayoutBounds, clip: LayoutBounds) {
+        val cm = try {
+            DangoMusic.instance.configManager
+        } catch (_: Throwable) {
+            return
+        }
+        // 档案列表每 2 秒刷新一次；操作完成后会强制刷新
+        val now = System.currentTimeMillis()
+        if (now - profileNamesAt > 2000L) refreshProfiles(cm)
+
+        // 第一行：档案名 + 保存
+        val field = LayoutBounds(b.x, b.y + 2f, b.width - ProfileMetrics.BUTTON_W - 8f, ProfileMetrics.FIELD_H)
+        profileNameRect = field
+        ui.card(field, if (profileEditing) Theme.CARD_HOVER else Theme.CARD, 7f)
+        if (profileEditing) {
+            ui.ctx.drawShape(field, ShapeStyle(Color(0f, 0f, 0f, 0f), 7f, 1f, RED))
+        }
+        val shown = if (profileEditing) {
+            profileName.display(caretVisible())
+        } else {
+            profileName.text.ifEmpty { "输入档案名" }
+        }
+        ui.text(
+            ui.trim(shown, field.width - 14f, 11f, Theme.FONT_SEMIBOLD), field.x + 7f,
+            Metrics.textY(field.y + field.height / 2f, 11f) - 0.5f, 11f,
+            if (profileName.text.isEmpty() && !profileEditing) Theme.TEXT_TERTIARY else Theme.TEXT_PRIMARY,
+            Theme.FONT_SEMIBOLD,
+        )
+        ui.hits += field.intersect(clip) to {
+            profileEditing = true
+            commitEdit()
+            screen.blurTextFields()
+            bindingKey = null
+            profileName.selectAll()
+        }
+        drawSmallButton(
+            LayoutBounds(b.right - ProfileMetrics.BUTTON_W, b.y + 2f, ProfileMetrics.BUTTON_W, ProfileMetrics.FIELD_H),
+            "保存当前", clip,
+        ) {
+            val name = profileName.text.trim()
+            if (name.isEmpty()) {
+                setStatus("先输入档案名")
+            } else if (cm.saveProfile(name)) {
+                profileName.clear()
+                profileEditing = false
+                refreshProfiles(cm, true)
+                setStatus("已保存：$name")
+            } else {
+                setStatus("保存失败，请查看日志")
+            }
+        }
+
+        // 档案列表：最多显示 3 行，超出时底部提示总数
+        val listTop = b.y + ProfileMetrics.FIELD_H + 8f
+        val rows = profileNames.take(ProfileMetrics.LIST_ROWS)
+        if (rows.isEmpty()) {
+            ui.text(
+                "还没有档案：输入名字后点「保存当前」", b.x, Metrics.textY(listTop + ProfileMetrics.ROW_H / 2f, 10f),
+                10f, Theme.TEXT_TERTIARY,
+            )
+        }
+        rows.forEachIndexed { i, name ->
+            val ry = listTop + i * ProfileMetrics.ROW_H
+            val row = LayoutBounds(b.x, ry, b.width, ProfileMetrics.ROW_H - 2f)
+            if (i % 2 == 0) ui.ctx.drawShape(row, ShapeStyle(Color(1f, 1f, 1f, 0.03f), 6f))
+            ui.text(ui.trim(name, b.width - ProfileMetrics.BUTTON_W * 2f - 18f, 10.5f, Theme.FONT_MEDIUM),
+                b.x + 6f, Metrics.textY(ry + row.height / 2f, 10.5f), 10.5f, Theme.TEXT_PRIMARY, Theme.FONT_MEDIUM)
+            drawSmallButton(
+                LayoutBounds(b.right - ProfileMetrics.BUTTON_W * 2f - 4f, ry + 1f, ProfileMetrics.BUTTON_W, ProfileMetrics.ROW_H - 4f),
+                "载入", clip,
+            ) {
+                if (cm.loadProfile(name)) {
+                    refreshProfiles(cm, true)
+                    setStatus("已载入：$name")
+                } else {
+                    setStatus("载入失败：$name")
+                }
+            }
+            drawSmallButton(
+                LayoutBounds(b.right - ProfileMetrics.BUTTON_W, ry + 1f, ProfileMetrics.BUTTON_W, ProfileMetrics.ROW_H - 4f),
+                "删除", clip,
+            ) {
+                if (cm.deleteProfile(name)) {
+                    refreshProfiles(cm, true)
+                    setStatus("已删除：$name")
+                } else {
+                    setStatus("删除失败：$name")
+                }
+            }
+        }
+        if (profileNames.size > ProfileMetrics.LIST_ROWS) {
+            ui.text(
+                "共 ${profileNames.size} 份档案，只显示前 ${ProfileMetrics.LIST_ROWS} 份",
+                b.x + 6f, Metrics.textY(listTop + ProfileMetrics.LIST_ROWS * ProfileMetrics.ROW_H + 6f, 9f),
+                9f, Theme.TEXT_TERTIARY,
+            )
+        }
+
+        // 底部：一键导出 / 一键导入 + 操作结果
+        val by = b.bottom - 28f
+        drawSmallButton(LayoutBounds(b.x, by, 84f, 24f), "导出当前", clip) {
+            val path = cm.exportCurrent()
+            setStatus(if (path != null) "已导出到 exports 目录" else "导出失败，请查看日志")
+        }
+        drawSmallButton(LayoutBounds(b.x + 90f, by, 84f, 24f), "导入最新", clip) {
+            setStatus(if (cm.importLatestExport()) "已导入最新的导出文件" else "没有可导入的导出文件")
+        }
+        val status = profileStatus
+        if (status.isNotEmpty() && now - profileStatusAt < 5000L) {
+            val sx = b.x + 182f
+            ui.text(ui.trim(status, b.right - sx, 9.5f), sx, Metrics.textY(by + 12f, 9.5f), 9.5f, RED)
+        }
+    }
+
+    private fun drawSmallButton(b: LayoutBounds, label: String, clip: LayoutBounds, action: () -> Unit) {
+        ui.card(b, if (ui.hover(b)) Theme.CARD_HOVER else Theme.CARD, 6f)
+        val w = ui.width(label, 10f, Theme.FONT_SEMIBOLD)
+        ui.text(label, b.x + (b.width - w) / 2f, Metrics.textY(b.y + b.height / 2f, 10f) - 0.5f, 10f,
+            Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD)
+        ui.hits += b.intersect(clip) to action
+    }
+
+    private fun refreshProfiles(cm: me.sorihiko.dango.config.ConfigManager, force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - profileNamesAt < 2000L) return
+        profileNames = cm.listProfiles()
+        profileNamesAt = now
+    }
+
+    private fun setStatus(text: String) {
+        profileStatus = text
+        profileStatusAt = System.currentTimeMillis()
+        persist()
+    }
+
     private fun applyDrag() {
         val v = dragValue ?: return
         if (dragTrack.width <= 0f) return
@@ -1053,8 +1507,34 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
 
     // ---------------------------------------------------------------- 按键
 
+    /**
+     * 离开设置页时清掉所有"正在输入"的状态。
+     * 否则录制中的快捷键会继续吞按键（例如想按空格暂停，结果把空格写进了快捷键）。
+     */
+    fun cancelInput() {
+        commitEdit()
+        bindingKey = null
+        profileEditing = false
+        dragValue = null
+    }
+
     /** 正在输入数值 / 文本或录快捷键时的按键；返回 true 表示按键被吃掉了 */
     fun keyTyped(typedChar: Char, keyCode: Int): Boolean {
+        // 不在设置页时不该再消费按键：残留的编辑 / 录制状态直接作废
+        if (ScreenState.page != Page.SETTINGS) {
+            bindingKey = null
+            editRow = null
+            profileEditing = false
+            return false
+        }
+        // 参数管理的档案名输入
+        if (profileEditing) {
+            when {
+                keyCode == Keys.RETURN || keyCode == Keys.NUMPADENTER || keyCode == Keys.ESCAPE -> profileEditing = false
+                else -> profileName.handleKey(typedChar, keyCode)
+            }
+            return true
+        }
         // 正在输入：Enter 确定，Esc 取消；其余交给 TextInput（含 Ctrl+C / V / X / A）
         if (editRow != null) {
             when {
@@ -1073,6 +1553,7 @@ internal class SettingsPage(private val screen: MusicScreen, private val module:
             keyCode != 0 -> v.setValue(keyCode)
         }
         bindingKey = null
+        persist()
         return true
     }
 }

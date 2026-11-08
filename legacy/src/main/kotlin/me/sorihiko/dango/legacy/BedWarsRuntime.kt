@@ -14,7 +14,6 @@ import bedwarsstats.RosterStatsService
 import me.sorihiko.dango.DangoLogger
 import me.sorihiko.dango.hud.BedWarsData
 import me.sorihiko.dango.module.impls.music.BedWarsModule
-import me.sorihiko.dango.module.impls.music.TabStatsHudModule
 
 import net.minecraft.block.Block
 import net.minecraft.client.Minecraft
@@ -189,6 +188,16 @@ object BedWarsRuntime {
     }
 
     private fun clearSession() {
+        // 离开世界 / 换维度时 publish() 不会再执行，会话统计必须在这里显式结算，
+        // 否则 adninMatchActive 会一直为 true，把离线时间也算进本局时长。
+        if (adninMatchActive) {
+            adninMatchActive = false
+            try {
+                AdninRuntime.onMatchActive(false, System.currentTimeMillis())
+            } catch (t: Throwable) {
+                DangoLogger.warn("Adnin match end failed: {}", t.toString())
+            }
+        }
         identities.clear()
         identityFormatted.clear()
         enqueued.clear()
@@ -573,7 +582,7 @@ object BedWarsRuntime {
             }
         }
 
-        syncStats(active, ownTeam, now)
+        syncStats(now)
     }
 
     private fun formatThreatLine(name: String, distance: Double): String {
@@ -584,15 +593,14 @@ object BedWarsRuntime {
     /**
      * 统计查询入队。
      *
-     * - 比赛确认后：自动为名单里的对手取数（原有行为，不含自己队）。
-     * - 按住 TAB 时：为在场所有人取数（含自己队与大厅玩家）；
-     *   队伍标签未知时按白色入队（管线只用队伍色做前缀，不影响查询）。
-     *
-     * 面板关闭且不在比赛时让管线停下（清队列），避免继续后台请求。
+     * 进入世界后自动为在场所有玩家取数，不再依赖「比赛已确认」或「按住 TAB」：
+     * - 在场人数超过 [MAX_AUTO_STATS_PLAYERS]（45）时完全停止自动入队，避免请求风暴；
+     * - 队伍标签未知时按白色入队（管线只用队伍色做前缀，不影响查询）；
+     * - 结果由 RosterStatsService 在内存中缓存，跨对局复用，减少重复请求。
+     * 离开世界或人数超限时清空去重集合，重新满足条件后允许再次入队。
      */
-    private fun syncStats(active: Boolean, ownTeam: Team, now: Long) {
-        val tabActive = TabStatsHudModule.of()?.isOpen == true
-        val working = active || tabActive
+    private fun syncStats(now: Long) {
+        val working = mc.theWorld != null && roster.size <= MAX_AUTO_STATS_PLAYERS
         if (working != statsMatchActive) {
             statsMatchActive = working
             rosterService.setMatchActive(working)
@@ -602,24 +610,17 @@ object BedWarsRuntime {
         // 统计总开关关闭 / 自动查询关闭时不自动入队（设置页的手动查询走 handleQuery，不受影响）
         if (!BedWarsData.hypStats || !BedWarsData.hypAutoQuery) return
 
-        if (active) {
-            for (identity in bedAlerts.roster()) {
-                val team = identity.team()
-                if (!team.known() || team == ownTeam) continue
-                if (!enqueued.add(identity.name)) continue
-                rosterService.enqueuePlayer(identity.name, team, now)
-            }
-        }
-        if (tabActive) {
-            for (identity in roster) {
-                val name = identity.name
-                if (name.isEmpty()) continue
-                if (!enqueued.add(name)) continue
-                val team = identity.team().let { if (it.known()) it else Team.WHITE }
-                rosterService.enqueuePlayer(name, team, now)
-            }
+        for (identity in roster) {
+            val name = identity.name
+            if (name.isEmpty()) continue
+            if (!enqueued.add(name)) continue
+            val team = identity.team().let { if (it.known()) it else Team.WHITE }
+            rosterService.enqueuePlayer(name, team, now)
         }
     }
+
+    /** 自动取数的人数上限：在场超过这个人数时完全停止自动请求。 */
+    private const val MAX_AUTO_STATS_PLAYERS = 45
 
     private const val SCAN_INTERVAL_MILLIS = 2000L
     private const val SCAN_RADIUS = 40

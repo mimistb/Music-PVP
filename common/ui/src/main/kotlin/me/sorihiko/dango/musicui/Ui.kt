@@ -99,13 +99,93 @@ internal class Ui {
     fun card(b: LayoutBounds, color: Color, radius: Float = 10f) =
         ctx.drawShape(b, ShapeStyle(color, radius))
 
+    // ---------------------------------------------------------------- 交互反馈
+
+    /** 最近一次被点中的区域：用于绘制 140ms 的按下态，纯视觉，不影响任何逻辑 */
+    private var pressRect: LayoutBounds? = null
+    private var pressAt = 0L
+
+    fun markPress(b: LayoutBounds) {
+        pressRect = b
+        pressAt = System.currentTimeMillis()
+    }
+
+    fun pressed(b: LayoutBounds): Boolean {
+        val r = pressRect ?: return false
+        if (System.currentTimeMillis() - pressAt > Theme.DUR_FAST) {
+            pressRect = null
+            return false
+        }
+        return r == b
+    }
+
+    /**
+     * 标准玻璃卡片：统一填充 + 1px 描边，悬停提亮、按下加深。
+     * 大块面板统一走这里，保证全界面的材质与反馈一致。
+     */
+    fun panel(b: LayoutBounds, radius: Float = Theme.RADIUS_CARD, active: Boolean = false, interactive: Boolean = true) {
+        val hovered = interactive && hover(b)
+        val down = interactive && pressed(b)
+        val fill = when {
+            down -> Theme.CARD_PRESS
+            active -> RED.copy(a = 0.20f)
+            hovered -> Theme.CARD_HOVER
+            else -> Theme.CARD
+        }
+        val border = if (hovered || active || down) Theme.HAIRLINE_HOVER else Theme.HAIRLINE
+        ctx.drawShape(b, ShapeStyle(fill, radius, 1f, border))
+    }
+
+    // ---------------------------------------------------------------- 加载占位
+
+    /** 骨架块 + 流光：网络数据回来之前给出明确“正在加载”的视觉反馈 */
+    fun skeleton(b: LayoutBounds, radius: Float = Theme.RADIUS_CHIP) {
+        if (b.width <= 0f || b.height <= 0f) return
+        card(b, Theme.SKELETON, radius)
+        shimmer(b, radius)
+    }
+
+    /** 缓慢横掠的高光带（1.6s 一轮，位置完全连续，不会跳变） */
+    fun shimmer(b: LayoutBounds, radius: Float = Theme.RADIUS_CHIP) {
+        if (b.width <= 0f || b.height <= 0f) return
+        val period = 1600f
+        val t = (System.currentTimeMillis() % period.toLong()) / period
+        val bandW = max(24f, b.width * 0.42f)
+        val travel = b.width + bandW * 2f
+        val bx = b.x - bandW + t * travel
+        val l = max(b.x, bx)
+        val r = min(b.right, bx + bandW)
+        if (r - l < 1f) return
+        card(LayoutBounds(l, b.y, r - l, b.height), Theme.SKELETON_SHINE, radius)
+    }
+
+    /** 不确定进度条：光块从左侧外滑到右侧外，循环无缝，用于等待状态 */
+    fun progressBar(b: LayoutBounds, color: Color = RED) {
+        if (b.width <= 0f || b.height <= 0f) return
+        card(b, Theme.SKELETON, b.height / 2f)
+        val period = 1400f
+        val t = (System.currentTimeMillis() % period.toLong()) / period
+        val segW = max(24f, b.width * 0.36f)
+        val x = b.x - segW + t * (b.width + segW)
+        val l = max(b.x, x)
+        val r = min(b.right, x + segW)
+        if (r - l < 1f) return
+        card(LayoutBounds(l, b.y, r - l, b.height), color, b.height / 2f)
+    }
+
     fun drawCover(b: LayoutBounds, tex: Texture?, radius: Float = 8f) {
         if (tex != null) ctx.drawImage(b, tex) else card(b, Theme.TRACK, radius)
     }
 
     /** 胶囊按钮：可选左侧图标 */
     fun pill(b: LayoutBounds, fill: Color, label: String, glyph: String? = null, action: () -> Unit) {
-        ctx.drawShape(b, ShapeStyle(if (hover(b)) fill.copy(a = fill.a * 0.85f) else fill, b.height / 2f))
+        val down = pressed(b)
+        val col = when {
+            down -> fill.copy(a = fill.a * 0.72f)
+            hover(b) -> fill.copy(a = fill.a * 0.85f)
+            else -> fill
+        }
+        ctx.drawShape(b, ShapeStyle(col, b.height / 2f))
         val tw = width(label, 12f, Theme.FONT_SEMIBOLD) + (if (glyph != null) 18f else 0f)
         var tx = b.x + (b.width - tw) / 2f
         if (glyph != null) {
@@ -118,7 +198,19 @@ internal class Ui {
 
     /** iOS 风格开关 */
     fun toggleSwitch(b: LayoutBounds, on: Boolean, clip: LayoutBounds, action: () -> Unit) {
-        ctx.drawShape(b, ShapeStyle(if (on) RED else Color(1f, 1f, 1f, if (hover(b)) 0.24f else 0.16f), b.height / 2f))
+        val down = pressed(b)
+        ctx.drawShape(
+            b,
+            ShapeStyle(
+                when {
+                    on -> RED.copy(a = if (down) 0.78f else 1f)
+                    down -> Color(1f, 1f, 1f, 0.26f)
+                    hover(b) -> Color(1f, 1f, 1f, 0.24f)
+                    else -> Color(1f, 1f, 1f, 0.16f)
+                },
+                b.height / 2f,
+            ),
+        )
         val k = b.height - 4f
         ctx.drawShape(LayoutBounds(if (on) b.right - 2f - k else b.x + 2f, b.y + 2f, k, k), ShapeStyle(Color(1f, 1f, 1f, 1f), k / 2f))
         hits += b.expand(4f, 4f).intersect(clip) to action
@@ -130,6 +222,12 @@ internal class Ui {
     fun easeOut(t: Float): Float {
         val u = 1f - t.coerceIn(0f, 1f)
         return 1f - u * u * u
+    }
+
+    /** 先加速后减速，用于窗口 / 卡片入场，避免首尾突然停顿 */
+    fun easeInOut(t: Float): Float {
+        val x = t.coerceIn(0f, 1f)
+        return if (x < 0.5f) 4f * x * x * x else 1f - (-2f * x + 2f).let { it * it * it } / 2f
     }
 
     /** 指数缓动：每帧往 target 靠近，time 越大越慢 */

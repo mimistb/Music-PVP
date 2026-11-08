@@ -2,10 +2,13 @@ package me.sorihiko.dango.forge
 
 import me.sorihiko.dango.DangoLogger
 import me.sorihiko.dango.DangoMusic
+import me.sorihiko.dango.events.HudRenderEvent
 import me.sorihiko.dango.events.TickEvent
 import me.sorihiko.dango.events.WorldRenderEndEvent
 import me.sorihiko.dango.legacy.BedWarsRuntime
 import me.sorihiko.dango.legacy.FpsPortRuntime
+import me.sorihiko.dango.legacy.KillIconRuntime
+import me.sorihiko.dango.legacy.ChatTranslateRuntime
 import me.sorihiko.dango.legacy.LegacyGl
 import me.sorihiko.dango.module.impls.music.TabStatsHudModule
 
@@ -16,6 +19,7 @@ import net.minecraftforge.client.event.MouseEvent
 import net.minecraftforge.client.event.RenderGameOverlayEvent
 import net.minecraftforge.client.event.RenderLivingEvent
 import net.minecraftforge.client.event.RenderWorldLastEvent
+import net.minecraftforge.event.entity.living.LivingDeathEvent
 import net.minecraftforge.event.entity.player.AttackEntityEvent
 import net.minecraftforge.fml.common.eventhandler.EventPriority
 import net.minecraftforge.fml.common.eventhandler.SubscribeEvent
@@ -52,6 +56,7 @@ class ForgeBridge {
             DangoLogger.error("Dango Music bedwars tick failed: {}", t)
         }
         FpsPortRuntime.tick()
+        KillIconRuntime.tick()
     }
 
     @SubscribeEvent
@@ -85,7 +90,11 @@ class ForgeBridge {
     @SubscribeEvent
     fun onRenderGameOverlayPost(e: RenderGameOverlayEvent.Post) {
         if (e.type != RenderGameOverlayEvent.ElementType.ALL) return
+        // 先叠加动态模糊等全屏效果，再画自定义 HUD，最后画击杀图标：
+        // 保证 HUD 不会被原版界面（聊天栏 / 计分板 / TAB）或全屏滤镜盖住
         FpsPortRuntime.onRenderOverlay()
+        DangoMusic.callEvent(HudRenderEvent(e.partialTicks))
+        KillIconRuntime.onRenderOverlay(e)
     }
 
     // ---------------------------------------------------------------- PVP 工具
@@ -113,11 +122,20 @@ class ForgeBridge {
     @SubscribeEvent
     fun onAttack(e: AttackEntityEvent) {
         FpsPortRuntime.onAttack(e)
+        KillIconRuntime.onAttack(e.target)
+    }
+
+    @SubscribeEvent
+    fun onLivingDeath(e: LivingDeathEvent) {
+        KillIconRuntime.onLivingDeath(e)
     }
 
     @SubscribeEvent
     fun onChat(e: ClientChatReceivedEvent) {
         FpsPortRuntime.onChat(e)
+        if (ChatTranslateRuntime.onChatReceived(e)) {
+            e.isCanceled = true
+        }
     }
 
     @SubscribeEvent

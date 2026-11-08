@@ -66,4 +66,41 @@ object LegacyPlatform : Platform {
     override fun openMusicScreen() {
         mc.displayGuiScreen(LegacyMusicScreen())
     }
+
+    /**
+     * 主界面背景图：AWT 原生文件选择框。
+     * 对话框会阻塞打开它的线程，必须放到独立线程 + AWT 事件线程，否则游戏主循环会停摆；
+     * 选完再调度回 Minecraft 主线程回调。
+     */
+    override fun pickImageFileAsync(onPicked: (String?) -> Unit) {
+        Thread({
+            val picked = try {
+                val result = arrayOfNulls<String>(1)
+                java.awt.EventQueue.invokeAndWait { result[0] = showImagePicker() }
+                result[0]
+            } catch (t: Throwable) {
+                me.sorihiko.dango.DangoLogger.warn("Image picker failed: {}", t.toString())
+                null
+            }
+            Minecraft.getMinecraft().addScheduledTask { onPicked(picked) }
+        }, "Dango-ImagePicker").apply { isDaemon = true }.start()
+    }
+
+    private fun showImagePicker(): String? {
+        val dialog = java.awt.FileDialog(null as java.awt.Frame?, "选择背景图片", java.awt.FileDialog.LOAD)
+        dialog.setFilenameFilter { _, name ->
+            val lower = name.lowercase()
+            lower.endsWith(".png") || lower.endsWith(".jpg") ||
+                lower.endsWith(".jpeg") || lower.endsWith(".bmp")
+        }
+        // Windows 原生对话框不认 FilenameFilter，用文件掩码兜底
+        dialog.file = "*.png;*.jpg;*.jpeg;*.bmp"
+        dialog.isVisible = true
+        val dir = dialog.directory ?: return null
+        val file = dialog.file ?: return null
+        return java.io.File(dir, file).absolutePath
+    }
+
+    override fun renderKillIconPreview(x: Int, y: Int, width: Int, height: Int, preset: Int): Boolean =
+        KillIconRuntime.renderPreview(x, y, width, height, preset)
 }

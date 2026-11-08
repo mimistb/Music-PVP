@@ -5,12 +5,15 @@ import me.sorihiko.dango.module.impls.music.AutoLyricsModule
 import me.sorihiko.dango.module.impls.music.BedWarsModule
 import me.sorihiko.dango.module.impls.music.DynamicIslandModule
 import me.sorihiko.dango.module.impls.music.FpsToolsModule
+import me.sorihiko.dango.module.impls.music.ChatTranslateSettingsModule
 import me.sorihiko.dango.module.impls.music.HitColorHudModule
 import me.sorihiko.dango.module.impls.music.HudInfoModule
 import me.sorihiko.dango.module.impls.music.HudLayoutModule
 import me.sorihiko.dango.module.impls.music.KeystrokesHudModule
+import me.sorihiko.dango.module.impls.music.KillIconHudModule
 import me.sorihiko.dango.module.impls.music.Lyrics2DModule
 import me.sorihiko.dango.module.impls.music.LyricsModule
+import me.sorihiko.dango.module.impls.music.MenuBackgroundModule
 import me.sorihiko.dango.module.impls.music.NeteaseMusicModule
 import me.sorihiko.dango.module.impls.music.SongCardModule
 import me.sorihiko.dango.module.impls.music.TabStatsHudModule
@@ -47,6 +50,9 @@ object DangoClient {
                 TabStatsHudModule(),
                 BedWarsModule(),
                 HitColorHudModule(),
+                KillIconHudModule(),
+                ChatTranslateSettingsModule(),
+                MenuBackgroundModule(),
                 FpsToolsModule(),
             ),
         )

@@ -29,8 +29,8 @@ import kotlin.math.min
  * 列表不再自己画在屏幕中间：尺寸由 [measure] 交给灵动岛，绘制进灵动岛的胶囊内容区，
  * 灵动岛尺寸不够时会换行 / 截断并标注显示人数，保证不超出屏幕。
  *
- * 歌词开关打开时 [isOpen] 为 false：列表临时隐藏，避免和歌词抢同一个胶囊；
- * 此时原版 TAB 列表也不再被拦截，按住 TAB 仍能看到原版名单。
+ * 歌词开关打开时 [isOpen] 依旧为真：按住 TAB 期间列表临时顶替灵动岛歌词，
+ * 原版 TAB 列表同时被拦截，松开 TAB 立即恢复歌词显示，不残留任何临时状态。
  *
  * 本模块只读 BedWarsData，不直接碰游戏对象。
  */
@@ -46,7 +46,7 @@ class TabStatsHudModule : Module() {
      * 列表是否正在灵动岛里显示（平台层据此隐藏原版 TAB 列表、统计管线据此补查在场所有人）。
      *
      * 需要同时满足：本模块开启、在游戏内、没开聊天栏、按住 TAB，
-     * 且灵动岛能承接列表（灵动岛开启、歌词关闭）。
+     * 且灵动岛能承接列表（灵动岛开启）。歌词开着不影响：按住期间由列表临时顶替歌词。
      */
     val isOpen: Boolean
         get() = enabled && DangoClient.platform.inGame &&
@@ -190,7 +190,10 @@ class TabStatsHudModule : Module() {
 
         val availW = (maxW - padX * 2f).coerceAtLeast(colW)
         var cols = floor((availW + gapX) / (colW + gapX)).toInt().coerceAtLeast(1)
-        if (n > 0) cols = min(cols, n)
+        // 一行最多 3 个玩家：多出来的往下换行，避免横向铺得太开
+        cols = min(cols, MAX_COLS)
+        // 没人在线时按单列宽算，胶囊跟着收窄，不留一排空白列
+        cols = if (n <= 0) 1 else min(cols, n)
         val needRows = if (n == 0) 0 else ceil(n.toFloat() / cols.toFloat()).toInt()
         val availH = (maxH - padY * 2f - titleH).coerceAtLeast(rowH)
         val maxRows = floor((availH + gapY) / (rowH + gapY)).toInt().coerceAtLeast(1)
@@ -285,6 +288,8 @@ class TabStatsHudModule : Module() {
         private const val AVATAR = 18f
         private const val NAME_SIZE = 10.5f
         private const val LINE_SIZE = 8f
+        /** 一行最多排几个玩家：多出来的换行，避免横向铺得太开 */
+        private const val MAX_COLS = 3
 
         @Volatile
         private var instance: TabStatsHudModule? = null

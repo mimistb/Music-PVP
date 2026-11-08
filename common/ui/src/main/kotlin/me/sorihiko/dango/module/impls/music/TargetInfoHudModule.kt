@@ -3,7 +3,7 @@ package me.sorihiko.dango.module.impls.music
 import glidehud.feature.TargetInfoState
 import me.sorihiko.dango.DangoClient
 import me.sorihiko.dango.event.EventHandler
-import me.sorihiko.dango.events.WorldRenderEndEvent
+import me.sorihiko.dango.events.HudRenderEvent
 import me.sorihiko.dango.font.MixedText
 import me.sorihiko.dango.gfx.GuiCanvas
 import me.sorihiko.dango.hud.HudData
@@ -161,7 +161,7 @@ class TargetInfoHudModule : Module() {
     }
 
     @EventHandler
-    fun render(e: WorldRenderEndEvent) {
+    fun render(e: HudRenderEvent) {
         if (!enabled) return
         val now = System.nanoTime()
         state.provider = HudData.targets

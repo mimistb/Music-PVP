@@ -404,7 +404,8 @@ object NeteaseApi {
                 conn.readTimeout = 15000
                 conn.setRequestProperty("User-Agent", UA)
                 conn.setRequestProperty("Accept", accept)
-                if (URL(current).host.endsWith("music.163.com")) {
+                // 必须带点边界：否则 evilmusic.163.com 这类主机也会收到含 MUSIC_U 的 Cookie
+                if (isNeteaseHost(URL(current).host)) {
                     conn.setRequestProperty("Referer", "https://music.163.com/")
                     val c = cookie()
                     conn.setRequestProperty("Cookie", if (c.isEmpty()) "os=pc; appver=2.10.13" else "$c; os=pc; appver=2.10.13")
@@ -433,4 +434,13 @@ object NeteaseApi {
         }
         return null
     }
+}
+
+/**
+ * 是否网易云自己的域名。必须带 `.` 边界：
+ * `evilmusic.163.com` 这类主机不应收到含 MUSIC_U 的 Cookie。
+ */
+internal fun isNeteaseHost(host: String): Boolean {
+    val h = host.lowercase()
+    return h == "music.163.com" || h.endsWith(".music.163.com")
 }

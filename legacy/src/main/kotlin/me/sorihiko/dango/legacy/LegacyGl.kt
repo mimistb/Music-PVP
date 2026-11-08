@@ -68,5 +68,6 @@ object LegacyDango {
         HudData.targets = targets
         HudData.targetScreen = targets
         DangoClient.start(LegacyPlatform, LegacyGfx)
+        ChatTranslateRuntime.install()
     }
 }

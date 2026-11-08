@@ -46,7 +46,7 @@ internal class PartyPage(private val screen: MusicScreen) {
             ui.text("或使用房间码加入", x, y, 10f, Theme.TEXT_TERTIARY, Theme.FONT_SEMIBOLD)
             y += 18f
             codeRect = LayoutBounds(x, y, 190f, 38f)
-            ui.card(codeRect, if (codeFocused) Theme.CARD_HOVER else Theme.CARD, 12f)
+            ui.panel(codeRect, 12f)
             if (codeFocused) ctx.drawShape(codeRect, ShapeStyle(Color(0f, 0f, 0f, 0f), 12f, 1f, RED))
             if (codeInput.isEmpty() && !codeFocused) {
                 ui.text("房间码", codeRect.x + 14f, codeRect.y + 12f, 14f, Theme.TEXT_TERTIARY, Theme.FONT_SEMIBOLD)
@@ -81,7 +81,7 @@ internal class PartyPage(private val screen: MusicScreen) {
             y += 18f
             for (m in list.take(10)) {
                 val row = LayoutBounds(x, y, 320f, 34f)
-                ui.card(row, Theme.CARD, 10f)
+                ui.panel(row, 10f, interactive = false)
                 val av = LayoutBounds(row.x + 8f, row.y + 6f, 22f, 22f)
                 ctx.drawShape(av, ShapeStyle(if (m.uid == ListenParty.hostUid) RED else Theme.TRACK, 11f))
                 ui.icon(m.name.take(1).uppercase(), av.x + 11f, av.y + 11f, 11f, Theme.TEXT_PRIMARY)

@@ -1,6 +1,7 @@
 package me.sorihiko.dango.music
 
 import me.sorihiko.dango.DangoClient
+import me.sorihiko.dango.DangoMusic
 import me.sorihiko.dango.module.impls.music.NeteaseMusicModule
 import me.sorihiko.dango.musicui.GridPage
 import me.sorihiko.dango.musicui.Library
@@ -18,8 +19,7 @@ import me.sorihiko.dango.platform.Keys
 import me.sorihiko.dango.ui.LayoutBounds
 import me.sorihiko.dango.ui.ShapeStyle
 import me.sorihiko.dango.ui.Theme
-import me.sorihiko.dango.utils.Color
-
+import kotlin.math.max
 import kotlin.math.min
 
 /**
@@ -60,9 +60,15 @@ class MusicScreen(
     private var pageKeyQuery: String? = null
 
     /** 界面打开时调用 */
+    /** 界面是否已经做过一次打开初始化（窗口 resize 会重新走平台层的 initGui） */
+    private var openedOnce = false
+
     fun opened() {
         if (ScreenState.context == null) ScreenState.context = DangoClient.gfx.newCanvas()
         openedAt = System.currentTimeMillis()
+        // resize 会重新调用 initGui：只重排版，不要重复发网络请求、也不要重播入场动画
+        if (openedOnce) return
+        openedOnce = true
         if (Library.playlists.isEmpty()) Library.reloadPlaylists()
         else if (Library.stale) Library.softRefresh()
         Library.loadRecommend()
@@ -74,12 +80,27 @@ class MusicScreen(
     }
 
     private fun close() {
+        closed()
         closeScreen()
+    }
+
+    /**
+     * 界面被关闭时的收尾（不负责切界面）：提交正在输入的内容并落盘。
+     * 平台层在 onGuiClosed 里也要调用，否则被断线 / 其它界面顶掉时输入会丢。
+     */
+    fun closed() {
+        settings.cancelInput()
+        try {
+            me.sorihiko.dango.DangoMusic.instance.configManager.saveIfChanged()
+        } catch (_: Throwable) {
+            // 写盘失败不应该阻止关闭界面
+        }
     }
 
     // ---------------------------------------------------------------- 导航
 
     internal fun go(p: Page) {
+        if (ScreenState.page == Page.SETTINGS && p != Page.SETTINGS) settings.cancelInput()
         tracks.clearFilter()
         ScreenState.page = p
         ScreenState.backPage = null
@@ -97,6 +118,7 @@ class MusicScreen(
 
     internal fun goBack() {
         if (ScreenState.page == Page.SETTINGS) {
+            settings.cancelInput()
             ScreenState.page = ScreenState.settingsBack
             return
         }
@@ -167,6 +189,7 @@ class MusicScreen(
         ui.mx = (platform.mouseX / scale).toInt()
         ui.my = (platform.mouseY / scale).toInt()
         val ctx = ui.ctx
+        val alpha = ui.easeOut((System.currentTimeMillis() - openedAt) / Theme.DUR_SLOW.toFloat())
         ctx.begin(true, ui.mx, ui.my)
         try {
             val now = System.nanoTime()
@@ -183,10 +206,9 @@ class MusicScreen(
             CoverCache.upload()
             login.uploadQr()
 
-            val alpha = ((System.currentTimeMillis() - openedAt) / 180f).coerceIn(0f, 1f)
             ctx.pushScale(scale, scale, 1f)
             ctx.pushOpacity(alpha)
-            ctx.drawShape(LayoutBounds(0f, 0f, ui.lw, ui.lh), ShapeStyle(Color(0f, 0f, 0f, 0.22f)))
+            ctx.drawShape(LayoutBounds(0f, 0f, ui.lw, ui.lh), ShapeStyle(Theme.OVERLAY))
             drawWindow(alpha)
             ctx.popOpacity()
             ctx.popTransform()
@@ -204,21 +226,36 @@ class MusicScreen(
         }
     }
 
+    private fun windowBounds(alpha: Float): LayoutBounds {
+        // 桌面端铺满窗口；超宽屏时限制最大宽度并居中，避免内容被拉得过于松散
+        val mX = max(16f, min(26f, ui.lw * 0.02f))
+        val mY = max(14f, min(20f, ui.lh * 0.025f))
+        val winW = min(ui.lw - mX * 2, 1680f)
+        val winX = (ui.lw - winW) / 2f
+        return LayoutBounds(winX, mY + (1f - alpha) * 14f, winW, ui.lh - mY * 2)
+    }
+
+    /** 直接打开播放器设置页（主菜单右上角的功能入口用） */
+    fun openSettings() {
+        settings.commitEdit()
+        blurTextFields()
+        settings.bindingKey = null
+        ScreenState.settingsBack = ScreenState.page
+        ScreenState.page = Page.SETTINGS
+    }
+
     private fun drawWindow(alpha: Float) {
-        // 几乎铺满屏幕，和 MuoniumPlayer 一样
-        val mX = 26f
-        val mY = 20f
-        val win = LayoutBounds(mX, mY + (1f - alpha) * 12f, ui.lw - mX * 2, ui.lh - mY * 2)
+        val win = windowBounds(alpha)
         ui.ctx.drawGlass(win, Theme.GLASS_WINDOW)
 
-        val pad = 10f
+        val pad = Theme.SPACE_10
         val sideW = 224f
         val barH = 74f
         val side = LayoutBounds(win.x + pad, win.y + pad, sideW, win.height - pad * 2)
-        val mainX = side.right + pad + 8f
-        val mainW = win.right - pad - 8f - mainX
+        val mainX = side.right + pad + Theme.SPACE_8
+        val mainW = win.right - pad - Theme.SPACE_8 - mainX
         val barRect = LayoutBounds(side.right + pad, win.bottom - pad - barH, win.right - pad - (side.right + pad), barH)
-        val content = LayoutBounds(mainX, win.y + pad + 14f, mainW, barRect.y - 10f - (win.y + pad + 14f))
+        val content = LayoutBounds(mainX, win.y + pad + Theme.SPACE_14, mainW, barRect.y - Theme.SPACE_10 - (win.y + pad + Theme.SPACE_14))
 
         sidebar.draw(side)
         drawContent(content)
@@ -278,14 +315,24 @@ class MusicScreen(
             return
         }
         if (mouseButton != 0) return
-        if (bar.mouseDown(mx, my)) return
-        if (tracks.scrollbarDown(mx, my)) return
+        // 播放栏 / 滚动条有自己的几何判定，但它们同样属于"页面外点击"：
+        // 先提交并释放输入焦点，否则录制中的快捷键会继续吞按键。
+        if (bar.mouseDown(mx, my) || tracks.scrollbarDown(mx, my)) {
+            settings.onClickElsewhere(null)
+            sidebar.searchFocused = false
+            tracks.filterFocused = false
+            party.codeFocused = false
+            return
+        }
         val hit = ui.hits.firstOrNull { it.first.contains(mx, my) }
         settings.onClickElsewhere(hit)
         if (hit == null || hit.first !== sidebar.searchRect) sidebar.searchFocused = false
         if (hit == null || hit.first !== tracks.filterRect) tracks.filterFocused = false
         if (hit == null || hit.first !== party.codeRect) party.codeFocused = false
-        hit?.second?.invoke()
+        if (hit != null) {
+            ui.markPress(hit.first)
+            hit.second.invoke()
+        }
     }
 
     /** 按住鼠标拖动时调用 */
