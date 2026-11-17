@@ -46,9 +46,9 @@ data class ShapeStyle(
 data class GlassStyle(
     val radius: Float = 0f,
     /** rgb = 染色, a = 染色强度 */
-    val tint: Color = Color(1f, 1f, 1f, 0.05f),
+    val tint: Color = Color(1f, 1f, 1f, 0.06f),
     /** 背景亮度上限，保证白字在亮背景（天空/雪地）上也可读 */
-    val maxLuma: Float = 0.35f,
+    val maxLuma: Float = 0.58f,
     val saturation: Float = 1.35f,
     /** 0 = 清透, 1 = 磨砂 */
     val frost: Float = 0.6f,
@@ -59,8 +59,13 @@ data class GlassStyle(
     val dispersion: Float = 0.25f,
     val highlight: Float = 1f,
     val shadow: ShadowStyle = ShadowStyle(),
-    /** 没有背景可采样时的退化填充色 */
-    val fallback: Color = Color(0.11f, 0.11f, 0.13f, 0.88f),
+    /**
+     * 没有背景可采样时的退化填充色。
+     *
+     * 必须是中性灰：深色兜底会让面板整块变黑，过亮的兜底（0.72+）配上白字会整块发白、
+     * 文字看不清。0.40 左右的中灰既不像黑块，也能让白色文字保持对比度。
+     */
+    val fallback: Color = Color(0.40f, 0.42f, 0.46f, 0.82f),
 )
 
 data class FontStyle(

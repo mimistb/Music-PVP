@@ -14,6 +14,8 @@ import me.sorihiko.dango.module.values.FloatValue
 import me.sorihiko.dango.module.values.ModuleValue
 import me.sorihiko.dango.music.CoverCache
 import me.sorihiko.dango.music.MusicPlayer
+import me.sorihiko.dango.ui.HudReveal
+import me.sorihiko.dango.ui.HudSnap
 import me.sorihiko.dango.ui.LayoutBounds
 import me.sorihiko.dango.ui.ShadowStyle
 import me.sorihiko.dango.ui.ShapeStyle
@@ -61,6 +63,7 @@ class SongCardModule : Module() {
     private var dragDY = 0f
     private var appear = 0f
     private var lastNanos = 0L
+
 
     /** 上一帧画出来的进度条（逻辑坐标）：点击 / 拖动它就能调播放进度 */
     private var barRect: LayoutBounds? = null
@@ -112,8 +115,9 @@ class SongCardModule : Module() {
         var x = posX.value * (lw - w) + ox
         var y = posY.value * (lh - h) + oy
 
-        // 打开聊天栏时可以拖动；底部进度行单独用来调播放进度（不拖动卡片）
         val chatOpen = platform.chatOpen
+
+        // 打开聊天栏时可以拖动；底部进度行单独用来调播放进度（不拖动卡片）
         val down = chatOpen && platform.isMouseDown(0)
         if (!down) {
             dragging = false
@@ -142,8 +146,14 @@ class SongCardModule : Module() {
                     dragDY = my - y
                 }
                 if (dragging) {
-                    x = (mx - dragDX).coerceIn(0f, lw - w)
-                    y = (my - dragDY).coerceIn(0f, lh - h)
+                    val snap = HudSnap.snap(
+                        "songcard",
+                        (mx - dragDX).coerceIn(0f, (lw - w).coerceAtLeast(0f)),
+                        (my - dragDY).coerceIn(0f, (lh - h).coerceAtLeast(0f)),
+                        w, h, lw, lh,
+                    )
+                    x = snap.x
+                    y = snap.y
                     posX.setValue(if (lw > w) (x - ox) / (lw - w) else 0f)
                     posY.setValue(if (lh > h) (y - oy) / (lh - h) else 0f)
                 }
@@ -151,13 +161,17 @@ class SongCardModule : Module() {
         }
 
         val ctx = context ?: DangoClient.gfx.newCanvas().also { context = it }
+        val cardBounds = LayoutBounds(x, y, w, h)
+        HudSnap.register("songcard", cardBounds)
         ctx.begin(true, mx.toInt(), my.toInt())
         try {
             ctx.pushScale(uiScale, uiScale, 1f)
-            ctx.pushOpacity(appear)
+            // 出场：歌曲自己的 appear × 整个 HUD 的呼出进度（进世界后 240ms 统一淡入）
+            ctx.pushOpacity(appear * HudReveal.alpha())
             mt.clear()
-            drawCard(ctx, LayoutBounds(x, y + (1f - appear) * 10f, w, h), chatOpen)
+            drawCard(ctx, LayoutBounds(x, y + (1f - appear) * 10f + HudReveal.offsetY(), w, h), chatOpen)
             ctx.popOpacity()
+            HudSnap.drawGuides(ctx)
             ctx.popTransform()
             mt.flush(uiScale)
         } finally {

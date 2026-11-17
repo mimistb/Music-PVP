@@ -7,8 +7,6 @@ import org.objectweb.asm.ClassWriter;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
-import org.objectweb.asm.tree.FieldNode;
-import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.FrameNode;
 import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
@@ -19,23 +17,22 @@ import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.VarInsnNode;
 
 /**
- * 液态玻璃启动画面的 ASM 注入：
- *   GuiMainMenu.drawScreen 头部      → SplashGlassHook.beginMainMenuFrame()V（清空本帧按钮记录）
- *   GuiMainMenu.drawScreen 末尾      → SplashGlassHook.drawMainMenuForeground(II)V（整屏自绘）
+ * 液态玻璃界面的 ASM 注入：
+ *   GuiMainMenu.drawScreen 头部      → SplashGlassHook.beginMainMenuFrame()V（重置入口图标可见性）
+ *   GuiMainMenu.drawScreen 末尾      → SplashGlassHook.drawMainMenuForeground(II)V（右上角入口图标）
+ *   GuiScreen.mouseClicked 头部      → SplashGlassHook.onMainMenuClick(III)Z（图标点击）
  *   GuiDownloadTerrain.drawScreen 末尾 → SplashGlassHook.drawLoadingForeground(II)V（预加载动画）
- *   GuiButton.drawButton 末尾        → SplashGlassHook.recordButton（只记录位置文字，不画东西）
  *
- * 主菜单 / 载入界面只按描述符 (IIF)V 匹配（这两个界面里该签名只有 drawScreen），避开 srg 名差异；
- * 按钮方法按 (MC;II)V 形状匹配，字段名同时兼容 MCP 名与 srg 名（运行环境是 srg）。
+ * 主菜单 / 载入界面只按描述符 (IIF)V 匹配（这两个界面里该签名只有 drawScreen），避开 srg 名差异。
  * 任何一步失败都原样返回，绝不因为补丁让游戏起不来。
  */
 public final class SplashGlassTransformer implements IClassTransformer {
 
     private static final String MAIN_MENU = "net.minecraft.client.gui.GuiMainMenu";
     private static final String LOADING = "net.minecraft.client.gui.GuiDownloadTerrain";
-    private static final String BUTTON = "net.minecraft.client.gui.GuiButton";
     private static final String SCREEN = "net.minecraft.client.gui.GuiScreen";
     private static final String HOOK = "me/sorihiko/dango/core/SplashGlassHook";
+    private static final String HELLO = "me/sorihiko/dango/ui/HelloIntro";
     private static final String DRAW_DESC = "(IIF)V";
     /** drawScreen 的候选名：MCP / srg / 混淆。GuiMainMenu 里还有两个 (IIF)V 的私有方法，必须按名字筛。 */
     private static final String[] DRAW_NAMES = {"drawScreen", "func_73863_a", "a"};
@@ -55,9 +52,6 @@ public final class SplashGlassTransformer implements IClassTransformer {
         } else if (LOADING.equals(transformedName) || LOADING.equals(name)) {
             hookMethod = "drawLoadingForeground";
             frameStart = false;
-        } else if (BUTTON.equals(transformedName) || BUTTON.equals(name)) {
-            hookMethod = null;
-            frameStart = false;
         } else {
             return basicClass;
         }
@@ -67,7 +61,7 @@ public final class SplashGlassTransformer implements IClassTransformer {
             ClassNode node = new ClassNode(Opcodes.ASM5);
             reader.accept(node, 0);
 
-            boolean patched = hookMethod == null ? patchButton(node) : patchScreen(node, hookMethod, frameStart);
+            boolean patched = patchScreen(node, hookMethod, frameStart);
             if (!patched) return basicClass;
 
             ClassWriter writer = new ClassWriter(ClassWriter.COMPUTE_MAXS);
@@ -91,23 +85,30 @@ public final class SplashGlassTransformer implements IClassTransformer {
 
             boolean patched = false;
             for (MethodNode method : node.methods) {
-                if (!"(III)V".equals(method.desc) || !isMouseClicked(method.name)) continue;
-                LabelNode skip = new LabelNode();
-                InsnList call = new InsnList();
-                call.add(new VarInsnNode(Opcodes.ILOAD, 1));   // mouseX
-                call.add(new VarInsnNode(Opcodes.ILOAD, 2));   // mouseY
-                call.add(new VarInsnNode(Opcodes.ILOAD, 3));   // mouseButton
-                call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOK,
-                        "onMainMenuClick", "(III)Z", false));
-                call.add(new JumpInsnNode(Opcodes.IFEQ, skip));
-                call.add(new InsnNode(Opcodes.RETURN));
-                call.add(skip);
-                // skip 是新增的跳转目标，1.8.9（class 版本 52）要求分支目标有对应的栈帧，
-                // COMPUTE_MAXS 不会自动补 StackMapTable，缺帧会在类校验时抛 VerifyError。
-                // 插入点在方法头，局部变量表与操作数栈都没变，用 F_SAME。
-                call.add(new FrameNode(Opcodes.F_SAME, 0, null, 0, null));
-                method.instructions.insert(call);
-                patched = true;
+                if ("(III)V".equals(method.desc) && isMouseClicked(method.name)) {
+                    LabelNode skip = new LabelNode();
+                    InsnList call = new InsnList();
+                    call.add(new VarInsnNode(Opcodes.ILOAD, 1));   // mouseX
+                    call.add(new VarInsnNode(Opcodes.ILOAD, 2));   // mouseY
+                    call.add(new VarInsnNode(Opcodes.ILOAD, 3));   // mouseButton
+                    call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOK,
+                            "onMainMenuClick", "(III)Z", false));
+                    call.add(new JumpInsnNode(Opcodes.IFEQ, skip));
+                    call.add(new InsnNode(Opcodes.RETURN));
+                    call.add(skip);
+                    // skip 是新增的跳转目标，1.8.9（class 版本 52）要求分支目标有对应的栈帧，
+                    // COMPUTE_MAXS 不会自动补 StackMapTable，缺帧会在类校验时抛 VerifyError。
+                    // 插入点在方法头，局部变量表与操作数栈都没变，用 F_SAME。
+                    call.add(new FrameNode(Opcodes.F_SAME, 0, null, 0, null));
+                    method.instructions.insert(call);
+                    patched = true;
+                } else if ("(CI)V".equals(method.desc) && isKeyTyped(method.name)) {
+                    // GuiScreen#keyTyped 头部 → HelloIntro.onKeyPress()V：开场动画任意键跳过。
+                    // 只插一次无分支的静态调用，不动栈帧。
+                    method.instructions.insert(new MethodInsnNode(Opcodes.INVOKESTATIC, HELLO,
+                            "onKeyPress", "()V", false));
+                    patched = true;
+                }
             }
             if (!patched) return basicClass;
 
@@ -121,6 +122,10 @@ public final class SplashGlassTransformer implements IClassTransformer {
 
     private static boolean isMouseClicked(String name) {
         return "mouseClicked".equals(name) || "func_73864_a".equals(name);
+    }
+
+    private static boolean isKeyTyped(String name) {
+        return "keyTyped".equals(name) || "func_73869_a".equals(name);
     }
 
     /** 在 drawScreen 的每个 RETURN 前调用一次钩子（每个 RETURN 插入新的节点，避免共享链表节点）。 */
@@ -139,7 +144,7 @@ public final class SplashGlassTransformer implements IClassTransformer {
                 hit = true;
             }
             if (hit && frameStart) {
-                // 方法头：开始新的一帧（清空按钮记录 + 入场动画计时）
+                // 方法头：开始新的一帧（重置入口图标可见性）
                 method.instructions.insert(new MethodInsnNode(
                         Opcodes.INVOKESTATIC, HOOK, "beginMainMenuFrame", "()V", false));
             }
@@ -153,62 +158,5 @@ public final class SplashGlassTransformer implements IClassTransformer {
             if (candidate.equals(name)) return true;
         }
         return false;
-    }
-
-    /** 在每个 RETURN 前记录按钮几何与文字（不画东西，视觉全部由 drawMainMenuForeground 自绘）。 */
-    private static boolean patchButton(ClassNode node) {
-        // 三个候选：MCP 名 / srg 名 / 运行时混淆名（coremod 有可能在 deobf 之前执行）
-        String xPos = field(node, "xPosition", "field_146128_h", "h");
-        String yPos = field(node, "yPosition", "field_146129_i", "i");
-        String width = field(node, "width", "field_146120_f", "f");
-        String height = field(node, "height", "field_146121_g", "g");
-        String label = field(node, "displayString", "field_146126_j", "j");
-        String enabled = field(node, "enabled", "field_146124_l", "l");
-        String visible = field(node, "visible", "field_146125_m", "m");
-        if (xPos == null || yPos == null || width == null || height == null
-                || label == null || enabled == null || visible == null) {
-            return false;
-        }
-
-        boolean patched = false;
-        for (MethodNode method : node.methods) {
-            if (!method.desc.endsWith("II)V") || !method.desc.startsWith("(L")) continue;
-            // 防御：只改第一个命中（drawButton），其它同形状方法原样保留
-            if (patched) break;
-
-            for (AbstractInsnNode insn = method.instructions.getFirst(); insn != null; insn = insn.getNext()) {
-                if (insn.getOpcode() != Opcodes.RETURN) continue;
-                InsnList call = new InsnList();
-                loadField(call, node.name, xPos, "I");
-                loadField(call, node.name, yPos, "I");
-                loadField(call, node.name, width, "I");
-                loadField(call, node.name, height, "I");
-                loadField(call, node.name, label, "Ljava/lang/String;");
-                loadField(call, node.name, enabled, "Z");
-                loadField(call, node.name, visible, "Z");
-                call.add(new VarInsnNode(Opcodes.ILOAD, 2));   // mouseX
-                call.add(new VarInsnNode(Opcodes.ILOAD, 3));   // mouseY
-                call.add(new MethodInsnNode(Opcodes.INVOKESTATIC, HOOK, "recordButton",
-                        "(IIIILjava/lang/String;ZZII)V", false));
-                method.instructions.insertBefore(insn, call);
-                patched = true;
-            }
-        }
-        return patched;
-    }
-
-    private static void loadField(InsnList ins, String owner, String fieldName, String desc) {
-        ins.add(new VarInsnNode(Opcodes.ALOAD, 0));
-        ins.add(new FieldInsnNode(Opcodes.GETFIELD, owner, fieldName, desc));
-    }
-
-    /** 字段名兼容 MCP 名 / srg 名 / 混淆名。 */
-    private static String field(ClassNode node, String mcpName, String srgName, String obfName) {
-        for (FieldNode f : node.fields) {
-            if (mcpName.equals(f.name) || srgName.equals(f.name) || obfName.equals(f.name)) {
-                return f.name;
-            }
-        }
-        return null;
     }
 }

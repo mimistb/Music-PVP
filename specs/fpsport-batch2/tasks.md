@@ -1,0 +1,31 @@
+# fpsport 第二批移植任务清单
+
+- [x] T1 落地 6 个模块源文件
+  - [x] `fpsport/render/CleanView.java`（含 `readPotionColor`）
+  - [x] `fpsport/render/BlockOverlay.java`（照抄导出）
+  - [x] `fpsport/render/ItemPhysics.java`
+  - [x] `fpsport/render/ItemPhysicsRenderer.java`（反射取数量方法）
+  - [x] `fpsport/utility/BetterChat.java`（srg 反射名 + `handleClick`）
+  - [x] `fpsport/utility/CPSDisplay.java`
+- [x] T2 三个 ASM transformer
+  - [x] `CleanViewTransformer`（栈保持式替换，无 FrameNode）
+  - [x] `ItemPhysicsTransformer`（HEAD 注入 + F_SAME）
+  - [x] `BetterChatTransformer`（handleChat / handleComponentClick 两处 HEAD）
+  - [x] `DangoCorePlugin` 注册
+- [x] T3 运行层接线
+  - [x] `FpsPortRuntime` 实例 + sync 字段
+  - [x] `tick` → `CPSDisplay.onTick`
+  - [x] `onMouse` → `CPSDisplay.onMouseClick`
+  - [x] `onRender3D` → `BlockOverlay.onRender3D`
+- [x] T4 设置数据层
+  - [x] `FpsToolsModule` 新增 10 个 `@ModuleValue`
+  - [x] `SettingsPage` 新增两个分组 + deps + 格式
+- [x] T5 版本与构建
+  - [x] `version.properties` 1.4.8 → 1.4.9
+  - [x] gradlew 构建通过
+  - [x] ASM 字节码自检（All OK）
+  - [x] 自检曝光 bug 修复：三个 transformer 的类名常量从 `/` 改为 `.`（LaunchClassLoader 传点分名，
+        `2.0` 版初稿会永远不命中）
+- [x] T6 备份与交付
+  - [x] jar + src.zip 备份到 `music pvp`
+  - [x] 中文交付说明（映射表、验收结果、放弃项原因）

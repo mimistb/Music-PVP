@@ -62,7 +62,7 @@ interface Platform {
     fun openMusicScreen()
 
     /**
-     * 弹出系统文件选择框挑一张本地图片（主界面背景用）；返回绝对路径，取消或不支持时返回 null。
+     * 弹出系统文件选择框挑一张本地图片（游戏选项背景用）；返回绝对路径，取消或不支持时返回 null。
      */
     fun pickImageFile(): String? = null
 

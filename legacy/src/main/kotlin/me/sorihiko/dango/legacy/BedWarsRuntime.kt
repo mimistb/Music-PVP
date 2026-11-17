@@ -9,6 +9,7 @@ import bedwars.PlayerIdentity
 import bedwars.Team
 import bedwars.ThreatEntity
 import bedwarsstats.BedWarsStats
+import bedwarsstats.HypixelGameMode
 import bedwarsstats.HypixelStatsClient
 import bedwarsstats.RosterStatsService
 import me.sorihiko.dango.DangoLogger
@@ -25,8 +26,6 @@ import net.minecraft.scoreboard.ScorePlayerTeam
 import net.minecraft.util.BlockPos
 import net.minecraft.world.World
 
-import java.util.Locale
-
 /**
  * 1.8.9 的床提醒 / Hypixel 统计取数层。
  *
@@ -42,15 +41,17 @@ object BedWarsRuntime {
     private val input = MatchInput()
 
     private val sidebar = ArrayList<String>()
+    private var sidebarTitle = ""
     private val roster = ArrayList<PlayerIdentity>()
     private val armorTeams = ArrayList<Team>()
     private val entityList = ArrayList<ThreatEntity>()
     private val bedList = ArrayList<BedMarker>()
     private val bedCache = LinkedHashMap<Long, BedMarker>()
 
-    /** uuid -> 解析好的名单身份；TAB 格式化名没变就直接复用，避免每 tick 重新解析。 */
-    private val identities = HashMap<String, PlayerIdentity>()
-    private val identityFormatted = HashMap<String, String>()
+    /** TAB 列表项 -> 解析结果。按 NetworkPlayerInfo 引用缓存，避免每 tick 重新拼 UUID / 格式化名。 */
+    private val rosterEntries = java.util.IdentityHashMap<Any, RosterEntry>()
+    /** 复用同一个列表做 TAB 名单比对，内容没变就不新建数组。 */
+    private val tabNameBuffer = ArrayList<String>(64)
 
     private var lastWorld: World? = null
     private var lastDimension = Int.MIN_VALUE
@@ -170,6 +171,7 @@ object BedWarsRuntime {
         input.ownBedProbe = probeOwnBed(world)
         scanBeds(world, player.posX, player.posY, player.posZ, now)
         fillInput(world, player, now)
+        BedWarsData.gameMode = if (isHypixel()) HypixelGameMode.fromScoreboard(sidebarTitle) else BedWarsData.GAME_UNKNOWN
         publishTabNames()
 
         try {
@@ -198,8 +200,7 @@ object BedWarsRuntime {
                 DangoLogger.warn("Adnin match end failed: {}", t.toString())
             }
         }
-        identities.clear()
-        identityFormatted.clear()
+        rosterEntries.clear()
         enqueued.clear()
         bedCache.clear()
         bedList.clear()
@@ -293,13 +294,22 @@ object BedWarsRuntime {
 
     private fun readSidebar(scoreboard: Scoreboard, out: MutableList<String>) {
         out.clear()
-        val objective = scoreboard.getObjectiveInDisplaySlot(1) ?: return
+        val objective = scoreboard.getObjectiveInDisplaySlot(1)
+        if (objective == null) {
+            sidebarTitle = ""
+            return
+        }
+        sidebarTitle = objective.displayName ?: ""
         for (score in scoreboard.getSortedScores(objective)) {
             val name = score.playerName
             val team = scoreboard.getPlayersTeam(name)
             out.add(if (team != null) ScorePlayerTeam.formatPlayerName(team, name) else name)
         }
     }
+
+    /** 只有 Hypixel 的计分板标题才有统计意义，其它服务器一律按未知处理。 */
+    private fun isHypixel(): Boolean =
+        mc.currentServerData?.serverIP?.lowercase()?.contains("hypixel") == true
 
     private fun readRoster(player: EntityPlayer, out: MutableList<PlayerIdentity>) {
         out.clear()
@@ -308,23 +318,34 @@ object BedWarsRuntime {
         for (info in netHandler.getPlayerInfoMap()) {
             val profile = info.gameProfile ?: continue
             val raw = profile.name ?: continue
-            val uuid = profile.id?.toString()?.replace("-", "") ?: ""
-            val formatted = info.displayName?.formattedText ?: raw
-            val cached = identities[uuid]
-            if (cached != null && identityFormatted[uuid] == formatted) {
-                out.add(cached)
-            } else {
-                val identity = PlayerIdentity.fromFormattedName(uuid, raw, formatted)
-                identities[uuid] = identity
-                identityFormatted[uuid] = formatted
-                out.add(identity)
+            // displayName 是同一个 IChatComponent 时 formattedText 不可能变；
+            // 只有组件被替换（前缀/血量更新）或者 cached 为空才重新解析。
+            val component = info.displayName
+            val cached = rosterEntries[info]
+            if (cached != null && cached.raw == raw && cached.component === component) {
+                out.add(cached.identity)
+                continue
             }
+            val uuid = profile.id?.toString()?.replace("-", "") ?: ""
+            val formatted = component?.formattedText ?: raw
+            val entry = RosterEntry(
+                raw,
+                component,
+                PlayerIdentity.fromFormattedName(uuid, raw, formatted),
+            )
+            rosterEntries[info] = entry
+            out.add(entry.identity)
         }
-        if (identities.size > 256) {
-            identities.clear()
-            identityFormatted.clear()
-        }
+        // 换过队伍/离开列表的旧条目不会自己消失，超上限就整体重置
+        if (rosterEntries.size > 512) rosterEntries.clear()
     }
+
+    /** 一个 TAB 列表项的解析缓存（引用比较 component，避免每 tick 生成格式化字符串）。 */
+    private class RosterEntry(
+        val raw: String,
+        val component: Any?,
+        val identity: PlayerIdentity,
+    )
 
     private fun buildEntities(world: World) {
         entityList.clear()
@@ -510,13 +531,15 @@ object BedWarsRuntime {
      * 名单内容没变就不替换数组，UI 侧用引用比较避免每 tick 重建显示缓存。
      */
     private fun publishTabNames() {
-        val out = ArrayList<String>(roster.size)
+        // 先在复用缓冲里拼，内容没变就直接返回：原来每 tick 都会 new 一个 ArrayList
+        // 再拷贝成数组，名单没变时纯属垃圾。
+        tabNameBuffer.clear()
         for (identity in roster) {
-            if (identity.name.isNotEmpty()) out.add(identity.name)
+            if (identity.name.isNotEmpty()) tabNameBuffer.add(identity.name)
         }
-        if (out == publishedTabNames) return
-        publishedTabNames = out
-        BedWarsData.tabNames = out.toTypedArray()
+        if (tabNameBuffer == publishedTabNames) return
+        publishedTabNames = ArrayList(tabNameBuffer)
+        BedWarsData.tabNames = tabNameBuffer.toTypedArray()
     }
 
     private fun publish(now: Long) {
@@ -587,7 +610,24 @@ object BedWarsRuntime {
 
     private fun formatThreatLine(name: String, distance: Double): String {
         val who = if (name.isEmpty()) "?" else name
-        return "床威胁 $who " + String.format(Locale.ROOT, "%.1f", distance) + " 格"
+        return "床威胁 $who " + oneDecimal(distance) + " 格"
+    }
+
+    /**
+     * 一位小数的快速格式化。
+     * 原先每 tick 走 String.format("%.1f")，会新建 Formatter + 解析格式串；
+     * 威胁存在时每 tick 都在跑，属于稳定的分配热点。
+     */
+    private fun oneDecimal(value: Double): String {
+        if (value.isNaN()) return "0.0"
+        if (value.isInfinite()) return if (value > 0) "∞" else "-∞"
+        val scaled = Math.round(value * 10.0)
+        val negative = scaled < 0
+        val abs = Math.abs(scaled)
+        val sb = StringBuilder(6)
+        if (negative) sb.append('-')
+        sb.append(abs / 10).append('.').append(abs % 10)
+        return sb.toString()
     }
 
     /**

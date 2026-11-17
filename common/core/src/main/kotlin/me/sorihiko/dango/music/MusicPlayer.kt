@@ -9,6 +9,7 @@ import java.io.ByteArrayInputStream
 import java.nio.file.Files
 import java.util.Random
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioInputStream
 import javax.sound.sampled.AudioSystem
@@ -44,6 +45,11 @@ object MusicPlayer {
     @Volatile var volume = 0.5f
 
     private val loader = Executors.newSingleThreadExecutor { r -> Thread(r, "Dango-MusicLoader").apply { isDaemon = true } }
+
+    /** 失败后延时换首：单线程复用，避免每次失败都新建线程 */
+    private val retry = Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "Dango-MusicRetry").apply { isDaemon = true }
+    }
     private val random = Random()
 
     /** 每次换歌 / 拖动都 +1，旧的解码线程看到代数变了就自己退出 */
@@ -189,6 +195,9 @@ object MusicPlayer {
                     state = State.PLAYING
                     l.start()
                 } else {
+                    // BUG-05: 暂停时输出流还没打开（曲终 / 打开中）→ seek 会保持暂停，
+                    // 解码线程停在暂停等待里，播放键看起来永久失灵。先回到播放态再定位。
+                    state = State.PLAYING
                     seek(pausedAtMs)
                 }
             }
@@ -238,27 +247,140 @@ object MusicPlayer {
                 }
                 return
             }
-            val url = NeteaseApi.songUrl(track.id)
-            if (gen != generation) return
-            if (url == null) return fail(gen, "拿不到播放地址")
-            val bytes = NeteaseApi.request(url.url)
-            if (gen != generation) return
-            if (bytes == null || bytes.size < 10_000) {
-                return fail(gen, if (NeteaseApi.loggedIn) "这首歌没有播放权限" else "需要登录才能播放（VIP 歌曲）")
+            // 1) 先用原生音源
+            val native = try {
+                when (track.provider) {
+                    "qq" -> QqMusicApi.songUrl(track.providerId)
+                    "kugou" -> KugouApi.songUrl(track.providerId)
+                    else -> NeteaseApi.songUrl(track.id)
+                }
+            } catch (_: Exception) {
+                null
             }
-            audio = bytes
-            message = if (url.trialOnly) "仅试听片段" else ""
-            val start = (startAt?.invoke() ?: 0L).coerceIn(0L, max(0L, track.durationMs - 1000))
-            if (paused) {
-                pausedAtMs = start
-                state = State.PAUSED
+            if (gen != generation) return
+            var bytes = native?.let { url -> try { NeteaseApi.request(url.url) } catch (_: Exception) { null } }
+            if (gen != generation) return
+            if (native != null && bytes != null && bytes.size >= 10_000) {
+                audio = bytes
+                message = if (native.trialOnly) "仅试听片段" else ""
+                val start = (startAt?.invoke() ?: 0L).coerceIn(0L, max(0L, track.durationMs - 1000))
+                if (paused) {
+                    pausedAtMs = start
+                    state = State.PAUSED
+                }
+                startDecode(gen, bytes, start)
+                return
             }
-            startDecode(gen, bytes, start)
+
+            // 2) 原生地址为空 / 下载失败（VIP、下架、地区限制）：按歌名 + 歌手跨平台换源
+            val alt = crossSource(track, gen)
+            if (gen != generation) return
+            if (alt != null) {
+                bytes = try { NeteaseApi.request(alt.url) } catch (_: Exception) { null }
+                if (gen != generation) return
+                if (bytes != null && bytes.size >= 10_000) {
+                    audio = bytes
+                    message = "已换源：" + alt.sourceName + (if (alt.trialOnly) "（试听）" else "")
+                    val start = (startAt?.invoke() ?: 0L).coerceIn(0L, max(0L, track.durationMs - 1000))
+                    if (paused) {
+                        pausedAtMs = start
+                        state = State.PAUSED
+                    }
+                    startDecode(gen, bytes, start)
+                    return
+                }
+            }
+            if (gen != generation) return
+            fail(
+                gen,
+                when {
+                    native == null && track.provider == "netease" -> "拿不到播放地址"
+                    track.provider != "netease" -> "该曲目暂无免费音源（可能为 VIP / 付费）"
+                    NeteaseApi.loggedIn -> "这首歌没有播放权限"
+                    else -> "需要登录才能播放（VIP 歌曲）"
+                },
+            )
         } catch (e: Throwable) {
             // 包括 NoClassDefFoundError 之类的 Error：不接住的话线程会悄悄退出，界面一直停在"加载中"
             DangoLogger.warn("Music load failed: {}", e.toString())
             fail(gen, "加载失败：" + describe(e))
         }
+    }
+
+    /** 换源结果：可播放地址 + 来源名（提示用） */
+    private class PlaybackSource(val url: String, val trialOnly: Boolean, val sourceName: String)
+
+    private fun norm(s: String): String = s.lowercase().filter { it.isLetterOrDigit() }
+
+    /** 匹配度：歌名完全相同 100、互相包含 60，歌手有交集再 +30 */
+    private fun matchScore(track: NeteaseTrack, cand: NeteaseTrack): Int {
+        val want = norm(track.name)
+        val got = norm(cand.name)
+        if (want.isEmpty() || got.isEmpty()) return 0
+        var s = when {
+            want == got -> 100
+            want.contains(got) || got.contains(want) -> 60
+            else -> 0
+        }
+        if (s > 0 && track.artists.isNotEmpty()) {
+            val mine = track.artists.map { norm(it) }.filter { it.isNotEmpty() }.toSet()
+            if (mine.isNotEmpty() && cand.artists.any { norm(it) in mine }) s += 30
+        }
+        return s
+    }
+
+    /**
+     * 原生音源不可用时，用「歌名 + 歌手」在其它平台检索同一首歌。
+     * 只接受匹配度 >= 60 的结果，按匹配度从高到低逐个尝试拿播放地址。
+     */
+    private fun crossSource(track: NeteaseTrack, gen: Int): PlaybackSource? {
+        val keyword = (listOf(track.name) + track.artists.take(1))
+            .filter { it.isNotBlank() }
+            .joinToString(" ")
+        if (keyword.isBlank()) return null
+        val candidates = ArrayList<Pair<String, NeteaseTrack>>()
+        if (track.provider != "netease") {
+            try {
+                NeteaseApi.search(keyword, 10).forEach { candidates += "netease" to it }
+            } catch (_: Exception) {
+            }
+        }
+        if (track.provider != "qq") {
+            try {
+                QqMusicApi.search(keyword, 10).forEach { candidates += "qq" to it }
+            } catch (_: Exception) {
+            }
+        }
+        if (track.provider != "kugou") {
+            try {
+                KugouApi.search(keyword, 10).forEach { candidates += "kugou" to it }
+            } catch (_: Exception) {
+            }
+        }
+        if (gen != generation) return null
+        val ranked = candidates
+            .map { (provider, cand) -> Triple(provider, cand, matchScore(track, cand)) }
+            .filter { it.third >= 60 }
+            .sortedByDescending { it.third }
+        for ((provider, cand, _) in ranked) {
+            if (gen != generation) return null
+            val url = try {
+                when (provider) {
+                    "qq" -> QqMusicApi.songUrl(cand.providerId)
+                    "kugou" -> KugouApi.songUrl(cand.providerId)
+                    else -> NeteaseApi.songUrl(cand.id)
+                }
+            } catch (_: Exception) {
+                null
+            } ?: continue
+            val name = when (provider) {
+                "qq" -> "QQ 音乐"
+                "kugou" -> "酷狗音乐"
+                else -> "网易云"
+            }
+            return PlaybackSource(url.url, url.trialOnly, name)
+        }
+        return null
     }
 
     /** 放不了就提示一下，1.5 秒后自动跳下一首；连着放不了 5 首就停下来，免得整张 VIP 歌单无限重试 */
@@ -270,18 +392,10 @@ object MusicPlayer {
         val giveUp = failStreak >= 5
         if (giveUp) message = "连续 ${failStreak} 首无法播放，已停止"
         // 不要占用唯一的 loader 线程睡觉：否则失败后的 1.5 秒内用户点的歌全部排队卡住
-        Thread({
-            try {
-                Thread.sleep(1500)
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-                return@Thread
-            }
+        // 也不能每次失败都新建线程（一首坏歌反复重试会不断增大线程数），统一走一个延时调度线程
+        retry.schedule({
             if (gen == generation && !giveUp && queue.size > 1) next()
-        }, "Dango-MusicRetry").apply {
-            isDaemon = true
-            start()
-        }
+        }, 1500L, TimeUnit.MILLISECONDS)
     }
 
     /** 真正开始出声时清零连续失败计数 */
@@ -301,32 +415,54 @@ object MusicPlayer {
      */
     private fun openLine(format: AudioFormat, bufferBytes: Int): SourceDataLine {
         var last: Throwable? = null
+        var opened: SourceDataLine? = null
         try {
-            val l = AudioSystem.getSourceDataLine(format)
+            opened = AudioSystem.getSourceDataLine(format)
             try {
-                l.open(format, bufferBytes)
+                opened.open(format, bufferBytes)
             } catch (e: Exception) {
-                l.open(format)
+                opened.open(format)
             }
-            return l
+            return opened
         } catch (e: Throwable) {
+            // 打不开的 line 也要关：否则每次换歌失败都会留下一个声卡设备句柄
+            closeQuietly(opened)
             last = e
             DangoLogger.warn("Default audio line failed: {}", e.toString())
         }
         val info = DataLine.Info(SourceDataLine::class.java, format)
         for (mi in AudioSystem.getMixerInfo()) {
+            var candidate: SourceDataLine? = null
             try {
                 val mixer = AudioSystem.getMixer(mi)
                 if (!mixer.isLineSupported(info)) continue
-                val l = mixer.getLine(info) as SourceDataLine
-                l.open(format)
+                candidate = mixer.getLine(info) as SourceDataLine
+                candidate.open(format)
                 DangoLogger.info("Using audio device: {}", mi.name)
-                return l
+                return candidate
             } catch (e: Throwable) {
+                closeQuietly(candidate)
                 last = e
             }
         }
         throw last ?: IllegalStateException("没有可用的声音输出设备")
+    }
+
+    /** 关掉一个可能没成功打开的 line，异常全部吞掉 */
+    private fun closeQuietly(l: SourceDataLine?) {
+        if (l == null) return
+        try {
+            l.stop()
+        } catch (_: Throwable) {
+        }
+        try {
+            l.flush()
+        } catch (_: Throwable) {
+        }
+        try {
+            l.close()
+        } catch (_: Throwable) {
+        }
     }
 
     private fun startDecode(gen: Int, bytes: ByteArray, startMs: Long) {

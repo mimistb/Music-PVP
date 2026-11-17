@@ -8,7 +8,9 @@ import me.sorihiko.dango.music.MusicPlayer
 import me.sorihiko.dango.music.NeteaseTrack
 
 import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import java.security.SecureRandom
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import kotlin.math.abs
 
@@ -70,6 +72,16 @@ object ListenParty {
         private set
     @Volatile var hostUid = ""
         private set
+    /** 房主是否给房间设了密码（界面提示用） */
+    @Volatile var passwordRequired = false
+        private set
+    /** 房主设置的密码（只在本机保存，广播出去的是它的 SHA-256） */
+    @Volatile private var roomPassword = ""
+    /** 加入时输入的密码，收到房主状态后才校验 */
+    @Volatile private var joinPassword = ""
+    /** 正在说话的人（语音帧 1.2 秒内出现过） */
+    @Volatile var speakingUids: Set<String> = emptySet()
+        private set
     /** 本机的固定 ID（写进 config/Music PVP/party_id.txt），用来区分房间里的成员 */
     @Volatile var myUid = ""
         private set
@@ -92,9 +104,14 @@ object ListenParty {
 
     private val presences = LinkedHashMap<String, Presence>()
     private val presenceLock = Any()
+    /** 每个人最后一次发出语音帧的时间，用来画"正在说话" */
+    private val speakingAt = ConcurrentHashMap<String, Long>()
 
     private val worker = Executors.newSingleThreadExecutor { r -> Thread(r, "Dango-Party").apply { isDaemon = true } }
     private val rng = SecureRandom()
+
+    /** 十六进制字符表：密码哈希每 32 字节查表拼接，避免 Formatter 分配 */
+    private val HEX = "0123456789abcdef".toCharArray()
 
     private var lastStateAt = 0L
     private var lastPresenceAt = 0L
@@ -135,6 +152,7 @@ object ListenParty {
                     if (now - lastMembersAt >= 1_000L) {
                         lastMembersAt = now
                         prunePresence()
+                        refreshSpeaking()
                     }
                     val down = client?.connected == false
                     if (down != linkDown) {
@@ -187,6 +205,38 @@ object ListenParty {
     private fun newCode(): String =
         (1..CODE_LENGTH).map { CODE_ALPHABET[rng.nextInt(CODE_ALPHABET.length)] }.joinToString("")
 
+    /** 房间密码只广播 SHA-256，不把明文放到公共中继上 */
+    private fun pwHash(s: String): String {
+        if (s.isBlank()) return ""
+        return try {
+            val digest = MessageDigest.getInstance("SHA-256").digest(s.toByteArray(StandardCharsets.UTF_8))
+            // 原来每个字节都走一次 "%02x".format()，一条消息就是 32 次 Formatter 分配
+            val sb = StringBuilder(digest.size * 2)
+            for (b in digest) {
+                val v = b.toInt() and 0xFF
+                sb.append(HEX[v ushr 4]).append(HEX[v and 0x0F])
+            }
+            sb.toString()
+        } catch (_: Exception) {
+            s
+        }
+    }
+
+    private fun markSpeaking(uid: String) {
+        if (uid.isNotEmpty()) speakingAt[uid] = System.currentTimeMillis()
+    }
+
+    private fun refreshSpeaking() {
+        val now = System.currentTimeMillis()
+        val it = speakingAt.entries.iterator()
+        while (it.hasNext()) {
+            if (now - it.next().value > 1_200L) it.remove()
+        }
+        val set = HashSet(speakingAt.keys)
+        if (set != speakingUids) speakingUids = set
+    }
+
+
     private fun stateTopic(c: String) = "$TOPIC_ROOT/$c/s"
 
     private fun presenceTopic(c: String, uid: String) = "$TOPIC_ROOT/$c/m/$uid"
@@ -200,13 +250,14 @@ object ListenParty {
 
     // ---------------------------------------------------------------- 开房 / 加入 / 离开
 
-    fun create() {
+    fun create(password: String = "") {
         if (busy || role != Role.NONE) return
         busy = true
         status = "正在创建房间…"
         worker.execute {
             try {
                 myUid = deviceId()
+                roomPassword = password.trim()
                 var done = false
                 for (attempt in 0 until 3) {
                     val c = newCode()
@@ -228,6 +279,7 @@ object ListenParty {
                     role = Role.HOST
                     hostUid = myUid
                     hostName = myName()
+                    passwordRequired = roomPassword.isNotEmpty()
                     remote = null
                     stateLive = false
                     stateAt = 0L
@@ -247,6 +299,8 @@ object ListenParty {
                 }
                 if (!done) fail("创建房间失败（房间码冲突，请重试）")
             } catch (e: Exception) {
+                // 中途异常可能已经把 role 置成 HOST；先彻底退出，否则 role != NONE 会永久挡住下次创建
+                leaveNow()
                 fail("创建房间失败：" + (e.message ?: e.javaClass.simpleName))
             } finally {
                 busy = false
@@ -254,11 +308,12 @@ object ListenParty {
         }
     }
 
-    fun join(input: String) {
+    fun join(input: String, password: String = "") {
         val c = input.trim().uppercase()
         if (busy || role != Role.NONE || c.isEmpty()) return
         busy = true
         status = "正在加入 $c …"
+        joinPassword = password.trim()
         worker.execute {
             try {
                 myUid = deviceId()
@@ -304,6 +359,8 @@ object ListenParty {
                 }
                 status = ""
             } catch (e: Exception) {
+                // 同 create：异常时可能已置 MEMBER / followMode=true，先退出避免卡死在死房间
+                leaveNow()
                 fail("加入失败：" + (e.message ?: e.javaClass.simpleName))
             } finally {
                 busy = false
@@ -335,6 +392,11 @@ object ListenParty {
         code = ""
         hostUid = ""
         hostName = ""
+        passwordRequired = false
+        roomPassword = ""
+        joinPassword = ""
+        speakingAt.clear()
+        speakingUids = emptySet()
         members = emptyList()
         remote = null
         stateLive = false
@@ -367,6 +429,9 @@ object ListenParty {
     /** 中继是否已连接。 */
     val relayConnected: Boolean get() = client?.connected == true
 
+    /** 这个人最近 1.2 秒内有没有发语音（界面画"正在说话"用） */
+    fun isSpeaking(uid: String): Boolean = uid in speakingUids
+
     /**
      * 语音回调：收到他人语音载荷（第一参数为发送者 uid，第二参数为原始字节）。
      * 传 null 表示不再接收。回调在 MQTT 读线程执行，实现方自己保证线程安全。
@@ -384,6 +449,7 @@ object ListenParty {
         if (!cl.connected || payload.isEmpty()) return
         // 单帧 20 ms 语音，正常只有 162 字节；太大的直接丢掉，避免占满公共中继
         if (payload.size > MAX_VOICE_FRAME) return
+        markSpeaking(uid)
         cl.publishBytes(voiceTopic(c, uid), payload, 0, false)
     }
 
@@ -454,6 +520,7 @@ object ListenParty {
         if (tail.startsWith("v/")) {
             val uid = tail.substring(2)
             if (uid.isEmpty() || uid == myUid) return
+            markSpeaking(uid)
             if (payload.isEmpty()) return
             val listener = voiceListener ?: return
             try {
@@ -520,6 +587,19 @@ object ListenParty {
         stateAt = System.currentTimeMillis()
         if (!retained) stateLive = true
         if (role != Role.MEMBER) return
+
+        // 密码校验：房主的哈希为空表示没设密码；不匹配就退出，避免进到房间又听不到
+        val need = o.str("pwd")
+        if (need.isNotEmpty() && need != pwHash(joinPassword)) {
+            val msg = if (joinPassword.isEmpty()) "房间需要密码" else "房间密码错误"
+            worker.execute {
+                if (role == Role.MEMBER) {
+                    leaveNow()
+                    status = msg
+                }
+            }
+            return
+        }
 
         val id = o.num("trackId")
         if (id <= 0L) {
@@ -599,6 +679,7 @@ object ListenParty {
         o.addProperty("v", 1)
         o.addProperty("host", myUid)
         o.addProperty("hostName", hostName)
+        o.addProperty("pwd", pwHash(roomPassword))
         if (t == null) {
             o.addProperty("trackId", 0L)
         } else {

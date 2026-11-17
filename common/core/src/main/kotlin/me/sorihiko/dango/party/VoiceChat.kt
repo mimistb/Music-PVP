@@ -6,6 +6,7 @@ import me.sorihiko.dango.module.Module
 import me.sorihiko.dango.module.values.BooleanValue
 import me.sorihiko.dango.module.values.FloatValue
 import me.sorihiko.dango.module.values.IntValue
+import me.sorihiko.dango.module.values.KeyBindValue
 import me.sorihiko.dango.module.values.ModuleValue
 
 import java.lang.reflect.Field
@@ -79,7 +80,8 @@ object VoiceChat {
     // ---------------------------------------------------------------- 设置镜像（sync 写入，音频线程读）
 
     @Volatile private var pushToTalk = true
-    @Volatile private var keyCode = 0
+    /** 语音按键当前是否按着（由 PartyVoiceKey 模块在 tick 里写入） */
+    @Volatile private var talkKeyDown = false
     @Volatile private var inputGain = 1f
     @Volatile private var outputVolume = 1f
     /** 0–100 的噪声门，0 = 关闭 */
@@ -119,7 +121,6 @@ object VoiceChat {
     private class Settings(
         val enabled: Boolean,
         val pushToTalk: Boolean,
-        val key: Int,
         val inputGain: Float,
         val outputVolume: Float,
         val gate: Int,
@@ -173,6 +174,9 @@ object VoiceChat {
     private fun intSetting(m: Module, fields: Map<String, Field>, name: String): Int? =
         (rawSetting(m, fields, name) as? IntValue)?.value
 
+    private fun keySetting(m: Module, fields: Map<String, Field>, name: String): KeyBindValue? =
+        rawSetting(m, fields, name) as? KeyBindValue
+
     private fun floatSetting(m: Module, fields: Map<String, Field>, name: String): Float? =
         (rawSetting(m, fields, name) as? FloatValue)?.value
 
@@ -183,7 +187,6 @@ object VoiceChat {
         return Settings(
             enabled = enabled,
             pushToTalk = boolSetting(m, f, "voicePushToTalk") ?: true,
-            key = intSetting(m, f, "voiceKey") ?: 0,
             inputGain = floatSetting(m, f, "voiceInputGain") ?: 1f,
             outputVolume = floatSetting(m, f, "voiceOutputVolume") ?: 1f,
             gate = intSetting(m, f, "voiceGate") ?: 0,
@@ -194,12 +197,16 @@ object VoiceChat {
 
     private fun mirror(s: Settings) {
         pushToTalk = s.pushToTalk
-        keyCode = s.key.coerceIn(0, 255)
         inputGain = s.inputGain.coerceIn(0.1f, 4f)
         outputVolume = s.outputVolume.coerceIn(0f, 2f)
         gate = s.gate.coerceIn(0, 100)
         bufferMs = s.bufferMs.coerceIn(20, 120)
         micMuted = s.micMuted
+    }
+
+    /** 语音按键按下 / 抬起（由 PartyVoiceKey 模块在 tick 里调用） */
+    fun setTalkKeyDown(down: Boolean) {
+        talkKeyDown = down
     }
 
     // ---------------------------------------------------------------- 生命周期
@@ -330,9 +337,8 @@ object VoiceChat {
             ListenParty.setVoiceListener(voiceListener)
 
             // 按键说话：聊天栏打开时不生效，避免打字时误开麦
-            val down = keyCode in 1..255 && isVoiceKeyDown(keyCode)
             val chat = chatOpen()
-            pttTalking = !pushToTalk || (down && !chat)
+            pttTalking = !pushToTalk || (talkKeyDown && !chat)
 
             if (active) {
                 status = when {
@@ -344,12 +350,6 @@ object VoiceChat {
         } catch (_: Throwable) {
             // 不能把异常带到游戏主循环
         }
-    }
-
-    private fun isVoiceKeyDown(key: Int): Boolean = try {
-        DangoMusic.instance.platform.isKeyDown(key)
-    } catch (_: Throwable) {
-        false
     }
 
     private fun chatOpen(): Boolean = try {
@@ -428,28 +428,37 @@ object VoiceChat {
 
     // ---------------------------------------------------------------- 设备
 
-    private fun openMic(fmt: AudioFormat): TargetDataLine? = try {
-        val line = AudioSystem.getTargetDataLine(fmt)
-        try {
-            line.open(fmt, MIC_BUFFER_BYTES)
+    private fun openMic(fmt: AudioFormat): TargetDataLine? {
+        var line: TargetDataLine? = null
+        return try {
+            line = AudioSystem.getTargetDataLine(fmt)
+            try {
+                line.open(fmt, MIC_BUFFER_BYTES)
+            } catch (_: Throwable) {
+                line.open(fmt)
+            }
+            line
         } catch (_: Throwable) {
-            line.open(fmt)
+            // 打开失败时 line 可能已经占用了设备句柄：必须关掉，否则重试几次后麦克风就再也拿不到
+            closeLine(line)
+            null
         }
-        line
-    } catch (_: Throwable) {
-        null
     }
 
-    private fun openSpeaker(fmt: AudioFormat): SourceDataLine? = try {
-        val line = AudioSystem.getSourceDataLine(fmt)
-        try {
-            line.open(fmt, SPK_BUFFER_BYTES)
+    private fun openSpeaker(fmt: AudioFormat): SourceDataLine? {
+        var line: SourceDataLine? = null
+        return try {
+            line = AudioSystem.getSourceDataLine(fmt)
+            try {
+                line.open(fmt, SPK_BUFFER_BYTES)
+            } catch (_: Throwable) {
+                line.open(fmt)
+            }
+            line
         } catch (_: Throwable) {
-            line.open(fmt)
+            closeLine(line)
+            null
         }
-        line
-    } catch (_: Throwable) {
-        null
     }
 
     // ---------------------------------------------------------------- 采集 / 编码 / 发送

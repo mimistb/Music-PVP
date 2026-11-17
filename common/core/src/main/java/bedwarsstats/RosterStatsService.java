@@ -38,6 +38,8 @@ public final class RosterStatsService {
     public static final long STATS_CACHE_MILLIS = 6L * 60L * 60L * 1000L;
     /** 两次网络请求之间的最小间隔（公开数据源没有 Key，但同样要克制）。 */
     public static final long SOURCE_SPACING_MILLIS = 1100L;
+    /** 等待请求间隔时的分片长度：让取消 / 停赛能在这个粒度内生效。 */
+    private static final long SPACING_SLICE_MILLIS = 50L;
     public static final int MAXIMUM_REMEMBERED_PLAYERS = 512;
     public static final int MAXIMUM_CURRENT_MATCH_PLAYERS = 128;
     public static final int MAXIMUM_CACHE_ENTRIES = 1024;
@@ -59,7 +61,9 @@ public final class RosterStatsService {
     // 以下容器只在 executor 线程上访问。
     private final ArrayDeque<Job> queue = new ArrayDeque<>();
     private final HashMap<String, Job> discoveredPlayers = new HashMap<>();
-    private final HashMap<String, Long> deduplicateUntil = new HashMap<>();
+    // 插入序：容量满时淘汰最早加入的那条，而不是 HashMap 桶顺序里的任意一条
+    private final java.util.LinkedHashMap<String, Long> deduplicateUntil =
+            new java.util.LinkedHashMap<>(16, 0.75f, false);
     // 访问序 LinkedHashMap：容量满时淘汰"最久没用过"的条目，而不是哈希桶里的任意一个
     private final java.util.LinkedHashMap<String, BedWarsStats> statsCache =
             new java.util.LinkedHashMap<>(16, 0.75f, true);
@@ -240,16 +244,10 @@ public final class RosterStatsService {
     private void startStatsLookup(String uuid, long requestGeneration) {
         if (requestGeneration != generation || !activeValid) return;
 
-        final long now = System.currentTimeMillis();
-        final long delay = SOURCE_SPACING_MILLIS - (now - lastSourceRequestMillis);
-        if (delay > 0) {
-            try {
-                Thread.sleep(delay);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-        }
+        // 用分片等待代替一次 1.1s 的 Thread.sleep：
+        // 单线程 executor 上睡满 1.1s 会把 cancel() / setMatchActive(false) 一起堵住，
+        // 关对局后仍会多打一次网络请求。
+        if (!awaitSourceSpacing(requestGeneration)) return;
         if (requestGeneration != generation || !activeValid) return;
 
         lastSourceRequestMillis = System.currentTimeMillis();
@@ -283,6 +281,24 @@ public final class RosterStatsService {
         statsCache.put(activeJob.playerName.toLowerCase(java.util.Locale.ROOT), stats);
         emitStatsReady(activeJob.playerName, activeJob.teamPrefix, stats);
         completeActive();
+    }
+
+    /**
+     * 等到距离上一次数据源请求满 {@link #SOURCE_SPACING_MILLIS}。
+     * 每 {@link #SPACING_SLICE_MILLIS} 检查一次取消状态，返回 false 表示这一轮应该放弃。
+     */
+    private boolean awaitSourceSpacing(long requestGeneration) {
+        for (;;) {
+            final long delay = SOURCE_SPACING_MILLIS - (System.currentTimeMillis() - lastSourceRequestMillis);
+            if (delay <= 0) return true;
+            if (requestGeneration != generation || !activeValid || !matchActive) return false;
+            try {
+                Thread.sleep(Math.min(delay, SPACING_SLICE_MILLIS));
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
     }
 
     private void pruneExpiredStats(long nowMillis) {

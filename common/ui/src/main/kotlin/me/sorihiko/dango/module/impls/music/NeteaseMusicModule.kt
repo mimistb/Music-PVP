@@ -10,6 +10,7 @@ import me.sorihiko.dango.module.ModuleMeta
 import me.sorihiko.dango.module.values.BooleanValue
 import me.sorihiko.dango.module.values.FloatValue
 import me.sorihiko.dango.module.values.IntValue
+import me.sorihiko.dango.module.values.KeyBindValue
 import me.sorihiko.dango.module.values.ModuleValue
 import me.sorihiko.dango.music.MusicPlayer
 import me.sorihiko.dango.music.NeteaseApi
@@ -29,27 +30,27 @@ class NeteaseMusicModule : Module() {
     @ModuleValue("随机播放", "随机顺序播放歌曲")
     private val shuffle = BooleanValue(false)
 
-    @ModuleValue("打开快捷键", "打开播放器的按键")
-    val openKey = IntValue(1, 255, Keys.PERIOD)
+    @ModuleValue("打开快捷键", "打开播放器的按键，支持组合键")
+    val openKey = KeyBindValue(intArrayOf(Keys.PERIOD), allowEmpty = false)
 
-    // 其它快捷键：默认只绑上下曲（+ / -），其余都不绑定（0 = 无），在播放器设置里自己设
+    // 其它快捷键：默认只绑上下曲（+ / -），其余都不绑定（无），在播放器设置里自己设
     @ModuleValue("播放 / 暂停", "播放或暂停的快捷键")
-    private val keyPause = IntValue(0, 255, 0)
+    private val keyPause = KeyBindValue()
 
     @ModuleValue("上一首", "切换到上一首的快捷键")
-    private val keyPrev = IntValue(0, 255, Keys.EQUALS)
+    private val keyPrev = KeyBindValue(intArrayOf(Keys.EQUALS))
 
     @ModuleValue("下一首", "切换到下一首的快捷键")
-    private val keyNext = IntValue(0, 255, Keys.MINUS)
+    private val keyNext = KeyBindValue(intArrayOf(Keys.MINUS))
 
     @ModuleValue("音量增加", "音量提高 5% 的快捷键")
-    private val keyVolUp = IntValue(0, 255, 0)
+    private val keyVolUp = KeyBindValue()
 
     @ModuleValue("音量减少", "音量降低 5% 的快捷键")
-    private val keyVolDown = IntValue(0, 255, 0)
+    private val keyVolDown = KeyBindValue()
 
     @ModuleValue("切换歌词", "开关歌词显示的快捷键")
-    private val keyLyrics = IntValue(0, 255, 0)
+    private val keyLyrics = KeyBindValue()
 
     // 语音聊天：进入音乐语音大厅后可互相通话（运行层由平台侧实现）
     @ModuleValue("语音聊天", "进入音乐语音大厅后可互相通话")
@@ -57,9 +58,6 @@ class NeteaseMusicModule : Module() {
 
     @ModuleValue("按键说话", "关闭后常开麦")
     private val voicePushToTalk = BooleanValue(true)
-
-    @ModuleValue("语音按键", "按住说话的按键，默认 V (47)")
-    private val voiceKey = IntValue(0, 255, Keys.V)
 
     @ModuleValue("麦克风增益", "0.1 ~ 4.0")
     private val voiceInputGain = FloatValue(0.1f, 4f, 1f, 2)
@@ -79,11 +77,17 @@ class NeteaseMusicModule : Module() {
     @ModuleValue("液态模糊", "关闭后所有液态玻璃面板改为半透明纯色，降低 GPU 占用")
     val liquidBlur = BooleanValue(true)
 
+    @ModuleValue("悬浮面板", "播放器以带透视的悬浮面板显示在画面上，打开时仍可自由移动")
+    val floatingPanel = BooleanValue(true)
+
+    @ModuleValue("悬浮距离", "悬浮面板打开时生成在玩家前方多少格处，修改后立即生效；按住面板滚轮可直接调节（每格 5）")
+    val panelDistance = FloatValue(0.5f, 64f, 2.2f, 2)
+
     private var wasDown = false
     /** 每个快捷键上一刻是否按着（只在按下的瞬间触发一次） */
-    private val hotkeyDown = HashMap<IntValue, Boolean>()
+    private val hotkeyDown = HashMap<KeyBindValue, Boolean>()
 
-    private val hotkeys: List<Pair<IntValue, () -> Unit>> by lazy {
+    private val hotkeys: List<Pair<KeyBindValue, () -> Unit>> by lazy {
         listOf(
             keyPause to { MusicPlayer.togglePause() },
             keyPrev to { MusicPlayer.prev() },
@@ -120,10 +124,11 @@ class NeteaseMusicModule : Module() {
         MusicPlayer.shuffle = shuffle.get()
     }
 
-    /** 播放器界面里按键时调用：是某个快捷键就执行并返回 true */
+    /** 播放器界面里按键时调用：是某个快捷键就执行并返回 true（组合键要求修饰键按住） */
     fun handleHotkey(keyCode: Int): Boolean {
         if (keyCode <= 0) return false
-        val hit = hotkeys.firstOrNull { it.first.value == keyCode } ?: return false
+        val platform = DangoMusic.instance.platform
+        val hit = hotkeys.firstOrNull { it.first.matchesPress(keyCode, platform) } ?: return false
         hit.second()
         return true
     }
@@ -147,15 +152,14 @@ class NeteaseMusicModule : Module() {
         // 只在游戏画面里（没有打开任何界面、不在聊天）响应按键
         val platform = DangoMusic.instance.platform
         val inGame = platform.inGame
-        val down = try { platform.isKeyDown(openKey.value) } catch (_: Exception) { false }
+        val down = try { openKey.isDown(platform) } catch (_: Exception) { false }
         if (down && !wasDown && inGame) {
             platform.openMusicScreen()
         }
         wasDown = down
 
         for ((key, action) in hotkeys) {
-            val code = key.value
-            val now = code > 0 && try { platform.isKeyDown(code) } catch (_: Exception) { false }
+            val now = try { key.isDown(platform) } catch (_: Exception) { false }
             if (now && hotkeyDown[key] != true && inGame) action()
             hotkeyDown[key] = now
         }

@@ -2,7 +2,6 @@ package me.sorihiko.dango.core;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.FontRenderer;
-import net.minecraft.client.gui.GuiButton;
 import net.minecraft.client.gui.GuiMainMenu;
 import net.minecraft.client.gui.GuiScreen;
 import net.minecraft.client.renderer.GlStateManager;
@@ -12,33 +11,27 @@ import net.minecraft.client.renderer.vertex.DefaultVertexFormats;
 
 import me.sorihiko.dango.DangoLogger;
 import me.sorihiko.dango.legacy.LegacyMusicScreen;
-import me.sorihiko.dango.module.impls.music.MenuBackgroundModule;
+import me.sorihiko.dango.ui.HelloIntro;
 
 import org.lwjgl.opengl.GL11;
 
-import java.lang.reflect.Field;
-import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 
 /**
- * 液态玻璃启动界面（整套，不叠在原版背景上）。
+ * 液态玻璃启动界面。
  *
- * <p>与宿主 HUD 同一套材质：深色近黑底 + 白色 5% 玻璃面 + #0A84FF 强调色 + 磨砂颗粒。
- * 主菜单在 drawScreen 结束时整屏重绘：先盖掉原版全景图 / logo / splash 文字 / 原版灰按钮，
- * 再画自己的标题玻璃窗和玻璃按钮；按钮位置和点击判定仍然用原版 GuiButton，只是视觉完全替换。
+ * <p>主菜单保持原版视觉（全景图 / logo / 按钮全部不动），只在右上角叠加一个滑杆入口图标，
+ * 点击打开播放器设置页。图标与宿主 HUD 同一套材质：深色半透明底 + 白色描边 + #0A84FF 强调色。
  *
  * <p>注入点（见 {@code SplashGlassTransformer}）：
  * <ul>
- *   <li>GuiMainMenu#drawScreen 头部：{@link #beginMainMenuFrame()}（清空本帧按钮记录）；</li>
- *   <li>GuiMainMenu#drawScreen 末尾：{@link #drawMainMenuForeground(int, int)}；</li>
- *   <li>GuiButton#drawButton 末尾：{@link #recordButton}（只记录位置与文字，不画东西）；</li>
+ *   <li>GuiMainMenu#drawScreen 头部：{@link #beginMainMenuFrame()}（重置本帧图标可见性）；</li>
+ *   <li>GuiMainMenu#drawScreen 末尾：{@link #drawMainMenuForeground(int, int)}（只画图标）；</li>
+ *   <li>GuiScreen#mouseClicked 头部：{@link #onMainMenuClick(int, int, int)}（命中图标时消费点击）；</li>
  *   <li>GuiDownloadTerrain#drawScreen 末尾：{@link #drawLoadingForeground(int, int)}（带加载动画）。</li>
  * </ul>
- * 主菜单的绘制拆成背景 / 标题 / 按钮三段，任一段失败只记一次日志、其余段照画；
- * 本帧一条按钮都没记录到时，用反射读 GuiScreen.buttonList 兜底补一份快照，避免只剩深色底。
- * 只画东西，不改任何控件逻辑；任何异常都吞掉，保证游戏能正常启动。
+ * 只画东西，不改任何原版控件逻辑；任何异常都吞掉，保证游戏能正常启动。
  */
 public final class SplashGlassHook {
 
@@ -54,17 +47,10 @@ public final class SplashGlassHook {
     private static final int FAN = GL11.GL_TRIANGLE_FAN;
     private static final int QUADS = GL11.GL_QUADS;
 
-    /** 本帧记录下来的主菜单按钮（由 GuiButton 钩子写入）。 */
-    private static final List<Btn> BUTTONS = new ArrayList<Btn>(8);
-    /** 按钮 hover 的平滑进度（逐个插值，避免鼠标扫过时亮度硬切）。 */
-    private static final float[] BUTTON_HOVER = new float[24];
-    /** 标题卡片右上角的功能入口（齿轮 / 滑杆图标）几何，每帧由 drawMainMenuForeground 更新。 */
+    /** 右上角功能入口（滑杆图标）几何，每帧由 drawMainMenuForeground 更新。 */
     private static float gearX = -1f, gearY = -1f, gearW = 26f, gearH = 26f;
     private static float gearHover;
     private static boolean gearVisible;
-    /** 标题窗入场动画起点。 */
-    private static GuiScreen lastScreen;
-    private static long openTime;
     /** 载入界面入场动画起点（窗口 / 界面变化时重置）。 */
     private static GuiScreen lastLoadingScreen;
     private static long loadingOpenTime;
@@ -75,283 +61,58 @@ public final class SplashGlassHook {
     private static final Map<String, float[]> GRAIN_CACHE = new HashMap<String, float[]>();
     private static final int GRAIN_CACHE_LIMIT = 12;
 
-    /** 三段绘制（背景 / 标题 / 按钮）各自只记一次失败日志，避免每帧刷屏。 */
-    private static final boolean[] STAGE_LOGGED = new boolean[3];
     /** 帧级钩子的异常也只记一次，避免每帧刷屏但又不至于完全无迹可查。 */
-    private static boolean beginErrorLogged;
+    private static boolean mainMenuErrorLogged;
     private static boolean loadingErrorLogged;
-    private static boolean buttonErrorLogged;
-    private static final String[] STAGE_NAMES = {"background", "title", "buttons"};
-    private static final int STAGE_BACKGROUND = 0;
-    private static final int STAGE_TITLE = 1;
-    private static final int STAGE_BUTTONS = 2;
 
     private SplashGlassHook() {
     }
 
     // ---------------------------------------------------------------- 主菜单
 
-    /** GuiMainMenu#drawScreen 头部：开始新的一帧。 */
+    /** GuiMainMenu#drawScreen 头部：开始新的一帧（只重置图标可见性，hover 值保留以保持平滑）。 */
     public static void beginMainMenuFrame() {
+        gearVisible = false;
+        // 开场动画一帧只画一次（drawScreen 可能有多个 RETURN）
+        HelloIntro.beginFrame();
+    }
+
+    /** 主菜单入口图标绘制失败只记一次日志，绝不向上抛。 */
+    private static void logMainMenuError(Throwable t) {
+        if (mainMenuErrorLogged) return;
+        mainMenuErrorLogged = true;
         try {
-            Minecraft mc = Minecraft.getMinecraft();
-            GuiScreen screen = mc.currentScreen;
-            if (screen != lastScreen) {
-                lastScreen = screen;
-                openTime = Minecraft.getSystemTime();
-                STAGE_LOGGED[STAGE_BACKGROUND] = false;
-                STAGE_LOGGED[STAGE_TITLE] = false;
-                STAGE_LOGGED[STAGE_BUTTONS] = false;
-                java.util.Arrays.fill(BUTTON_HOVER, 0f);
-            }
-            BUTTONS.clear();
-            gearVisible = false;
-            gearHover = 0f;
-
-            // 主界面背景图：路径变化时异步读盘，读好后在本帧上传纹理。
-            // 模块关闭时传空路径，顺手释放已占用的纹理。
-            MenuBackgroundModule bg = MenuBackgroundModule.of();
-            if (bg != null) {
-                MenuBackground.ensure(bg.getEnabled() ? bg.getPath().get() : "");
-            }
-            MenuBackground.tick();
-        } catch (Throwable t) {
-            if (!beginErrorLogged) {
-                beginErrorLogged = true;
-                DangoLogger.warn("Main menu frame hook failed: {}", t.toString());
-            }
-        }
-    }
-
-    /** GuiButton#drawButton 末尾：记录位置、文字、状态（不在原版按钮上叠加任何东西）。 */
-    public static void recordButton(int x, int y, int w, int h, String label, boolean enabled,
-                                    boolean visible, int mouseX, int mouseY) {
-        try {
-            if (!(Minecraft.getMinecraft().currentScreen instanceof GuiMainMenu)) return;
-            if (!visible || w <= 0 || h <= 0) return;
-            addButton(x, y, w, h, label == null ? "" : label, enabled);
-        } catch (Throwable t) {
-            if (!buttonErrorLogged) {
-                buttonErrorLogged = true;
-                DangoLogger.warn("Main menu button hook failed: {}", t.toString());
-            }
-        }
-    }
-
-    /**
-     * 兜底：ASM 钩子没记录到按钮（例如 GuiButton#drawButton 补丁没打上）时，
-     * 直接反射读 GuiScreen 的按钮列表（MCP 名 buttonList / srg 名 field_146292_n），
-     * 把可见按钮的位置、文字与可用状态补进 BUTTONS，避免只剩深色底。
-     */
-    private static void collectButtonsFromScreen(GuiScreen screen) {
-        try {
-            final Object listValue = readField(screen, "buttonList", "field_146292_n");
-            if (!(listValue instanceof List)) return;
-            final List<?> list = (List<?>) listValue;
-            for (Object entry : list) {
-                if (!(entry instanceof GuiButton)) continue;
-                final GuiButton button = (GuiButton) entry;
-                if (!readBoolean(button, true, "visible", "field_146125_m")) continue;
-                final int x = readInt(button, Integer.MIN_VALUE, "xPosition", "field_146128_h");
-                final int y = readInt(button, Integer.MIN_VALUE, "yPosition", "field_146129_i");
-                final int w = readInt(button, 0, "width", "field_146120_f");
-                final int h = readInt(button, 0, "height", "field_146121_g");
-                if (x == Integer.MIN_VALUE || y == Integer.MIN_VALUE || w <= 0 || h <= 0) continue;
-                final Object label = readField(button, "displayString", "field_146126_j");
-                addButton(x, y, w, h, label instanceof String ? (String) label : "",
-                        readBoolean(button, true, "enabled", "field_146124_l"));
-            }
-        } catch (Throwable t) {
-            logStage(STAGE_BUTTONS, t);
-        }
-    }
-
-    /** 记录一个按钮快照（两路来源共用去重与数量上限）。 */
-    private static void addButton(int x, int y, int w, int h, String label, boolean enabled) {
-        if (w <= 0 || h <= 0) return;
-        if (BUTTONS.size() >= 10) return;
-        for (Btn b : BUTTONS) {
-            if (b.x == x && b.y == y && b.w == w && b.h == h && b.label.equals(label)) return;
-        }
-        BUTTONS.add(new Btn(x, y, w, h, label == null ? "" : label, enabled));
-    }
-
-    private static Object readField(Object target, String... names) {
-        if (target == null) return null;
-        for (String name : names) {
-            try {
-                Field field = findField(target.getClass(), name);
-                if (field == null) continue;
-                field.setAccessible(true);
-                return field.get(target);
-            } catch (Throwable ignored) {
-                // 换下一个候选名
-            }
-        }
-        return null;
-    }
-
-    private static Field findField(Class<?> type, String name) {
-        for (Class<?> current = type; current != null; current = current.getSuperclass()) {
-            try {
-                return current.getDeclaredField(name);
-            } catch (NoSuchFieldException ignored) {
-                // 继续往父类找
-            }
-        }
-        return null;
-    }
-
-    private static int readInt(Object target, int fallback, String... names) {
-        final Object value = readField(target, names);
-        return value instanceof Number ? ((Number) value).intValue() : fallback;
-    }
-
-    private static boolean readBoolean(Object target, boolean fallback, String... names) {
-        final Object value = readField(target, names);
-        return value instanceof Boolean ? (Boolean) value : fallback;
-    }
-
-    /** 绘制失败只记一次日志，绝不向上抛。 */
-    private static void logStage(int stage, Throwable t) {
-        try {
-            if (STAGE_LOGGED[stage]) return;
-            STAGE_LOGGED[stage] = true;
-            DangoLogger.warn("Splash glass {} draw failed: {}", STAGE_NAMES[stage],
-                    t == null ? "unknown" : t.toString());
+            DangoLogger.warn("Main menu entry hook failed: {}", t == null ? "unknown" : t.toString());
         } catch (Throwable ignored) {
             // 日志本身也不能影响渲染
         }
     }
 
-    /** GuiMainMenu#drawScreen 末尾：整屏盖掉原版画面，画自己的背景、标题与按钮。 */
+    /** GuiMainMenu#drawScreen 末尾：只叠加右上角的滑杆入口图标，主菜单视觉保持原版。 */
     public static void drawMainMenuForeground(int mouseX, int mouseY) {
-        Minecraft mc;
-        GuiScreen screen;
         try {
-            mc = Minecraft.getMinecraft();
-            if (!(mc.currentScreen instanceof GuiMainMenu)) return;
-            screen = mc.currentScreen;
-        } catch (Throwable t) {
-            logStage(STAGE_BACKGROUND, t);
-            restore();
-            return;
-        }
-        final int width = screen.width;
-        final int height = screen.height;
-        final long now = Minecraft.getSystemTime();
+            Minecraft mc = Minecraft.getMinecraft();
+            GuiScreen screen = mc.currentScreen;
+            if (!(screen instanceof GuiMainMenu)) return;
 
-        // 1) 整屏液态玻璃底：完全盖住原版全景图、logo、splash 文字与原版按钮
-        try {
-            drawBase(width, height);
-        } catch (Throwable t) {
-            logStage(STAGE_BACKGROUND, t);
-            restore();
-        }
+            // 开场 Hello 动画：整屏接管主菜单，播完（或被跳过）之后才露出原版按钮
+            HelloIntro.render();
+            if (HelloIntro.isActive()) return;
 
-        // 2) 标题玻璃窗（带轻微上浮与缩放入场）；失败只影响标题，按钮照画
-        float alpha = 1f;
-        float ease = 0f;
-        try {
-            float appear = clamp((now - openTime) / 420f, 0f, 1f);
-            ease = 1f - (1f - appear) * (1f - appear);
-            float subEase = 1f - (1f - clamp((now - openTime - 140f) / 380f, 0f, 1f))
-                    * (1f - clamp((now - openTime - 140f) / 380f, 0f, 1f));
-            float cardW = Math.min(430f, width - 36f);
-            float cardH = Math.min(112f, Math.max(54f, height * 0.185f));
-            float cardX = (width - cardW) * 0.5f;
-            float cardY = 10f + (1f - ease) * 8f;
-            float titleScale = height < 300 ? 1.5f : 1.9f;
-
-            // 首帧也保留 45% 不透明度，避免整块标题窗在入场时“看不见”
-            alpha = 0.45f + 0.55f * ease;
-            glassCard(cardX, cardY, cardX + cardW, cardY + cardH, 18f, alpha, true);
-
-            // 右上角功能入口：与按钮同一套玻璃语言，点击打开播放器设置页
-            gearX = cardX + cardW - 38f;
-            gearY = cardY + 12f;
+            // 右上角固定位置：滑杆图标靠右；26x26、距顶/右 12
             gearW = 26f;
             gearH = 26f;
+            gearX = screen.width - 12f - gearW;
+            gearY = 12f;
             gearVisible = true;
             boolean gearHot = mouseX >= gearX && mouseX < gearX + gearW
                     && mouseY >= gearY && mouseY < gearY + gearH;
             gearHover += ((gearHot ? 1f : 0f) - gearHover) * 0.28f;
-            drawGear(alpha, gearHover);
-
-            FontRenderer fr = mc.fontRendererObj;
-            prepareText();
-            // 标题从 0.94 缓到 1.0：悬浮感入场，而不是硬邦邦地出现
-            float pop = 0.94f + 0.06f * ease;
-            GlStateManager.pushMatrix();
-            GlStateManager.translate(width * 0.5f, cardY + cardH * 0.32f - titleScale * 4f, 0f);
-            GlStateManager.scale(titleScale * pop, titleScale * pop, 1f);
-            String title = "DANGO MUSIC";
-            fr.drawString(title, -fr.getStringWidth(title) / 2, 0, alphaColor(0xFFFFFFFF, ease));
-            GlStateManager.popMatrix();
-
-            if (cardH >= 60f) {
-                centered(fr, "L I Q U I D   G L A S S", width * 0.5f, cardY + cardH * 0.72f,
-                        alphaColor(0xFF6FB4E8, subEase * 0.95f));
-                // 副标题下的强调色细线从中间向两边展开
-                float lineW = 26f * subEase;
-                beginGlass();
-                rect(width * 0.5f - lineW, cardY + cardH * 0.86f, width * 0.5f + lineW,
-                        cardY + cardH * 0.86f + 1f, ACC_R, ACC_G, ACC_B, 0.55f * subEase);
-                endGlass();
-            }
+            drawGear(1f, gearHover);
         } catch (Throwable t) {
-            logStage(STAGE_TITLE, t);
+            logMainMenuError(t);
             restore();
         }
-
-        // 3) 玻璃按钮（位置来自原版 / 反射兜底，视觉完全自绘）
-        try {
-            if (BUTTONS.isEmpty()) collectButtonsFromScreen(screen);
-            FontRenderer fr = mc.fontRendererObj;
-
-            // 主按钮外再套一层玻璃底板：和播放器界面一样，按钮组属于同一块玻璃面板
-            drawButtonBackdrop(alpha, ease);
-
-            for (int i = 0; i < BUTTONS.size(); i++) {
-                Btn b = BUTTONS.get(i);
-                boolean hover = b.enabled && mouseX >= b.x && mouseX < b.x + b.w
-                        && mouseY >= b.y && mouseY < b.y + b.h;
-                int slot = Math.min(i, BUTTON_HOVER.length - 1);
-                float target = hover ? 1f : 0f;
-                // 每帧向目标收敛 22%，鼠标快速扫过时也是渐变而不是闪一下
-                BUTTON_HOVER[slot] += (target - BUTTON_HOVER[slot]) * 0.22f;
-                // 按钮逐个错峰淡入（每项 55ms），形成自然的瀑布节奏
-                float in = clamp((now - openTime - 150f - i * 55f) / 280f, 0f, 1f);
-                float inEase = 1f - (1f - in) * (1f - in);
-                drawGlassButton(fr, b, BUTTON_HOVER[slot], alpha * inEase);
-            }
-        } catch (Throwable t) {
-            logStage(STAGE_BUTTONS, t);
-            restore();
-        }
-    }
-
-    /** 只围住主按钮（跳过左下角语言等小图标），画一块和播放器卡片同材质的玻璃底板。 */
-    private static void drawButtonBackdrop(float alpha, float ease) {
-        float x0 = Float.MAX_VALUE;
-        float y0 = Float.MAX_VALUE;
-        float x1 = -Float.MAX_VALUE;
-        float y1 = -Float.MAX_VALUE;
-        int count = 0;
-        for (Btn b : BUTTONS) {
-            if (b.w < 120) continue;
-            x0 = Math.min(x0, (float) b.x);
-            y0 = Math.min(y0, (float) b.y);
-            x1 = Math.max(x1, (float) (b.x + b.w));
-            y1 = Math.max(y1, (float) (b.y + b.h));
-            count++;
-        }
-        if (count == 0) return;
-        x0 -= 16f;
-        y0 -= 14f;
-        x1 += 16f;
-        y1 += 14f;
-        glassCard(x0, y0, x1, y1, 24f, alpha * ease * 0.92f, true);
     }
 
     // ---------------------------------------------------------------- 载入界面（预加载动画）
@@ -479,13 +240,6 @@ public final class SplashGlassHook {
         // 整屏稀疏磨砂颗粒（固定网格，不闪烁）
         grain(0f, 0f, (float) width, (float) height, 13f, 0.020f);
         endGlass();
-
-        // 自定义背景图叠在渐变底之上；关闭或路径为空时保持原样
-        MenuBackgroundModule bg = MenuBackgroundModule.of();
-        if (bg != null && bg.getEnabled() && MenuBackground.ready()) {
-            MenuBackground.draw(width, height, bg.getFillMode().getValue(),
-                    bg.getOpacity().getValue() / 100f, bg.getDim().getValue() / 100f);
-        }
     }
 
     /** 斜向液态高光：两端透明、中段最亮，每 15 秒横掠一次，不产生任何硬边。 */
@@ -533,12 +287,18 @@ public final class SplashGlassHook {
         endGlass();
     }
 
-    /** 主菜单点击：命中右上角功能入口时打开播放器设置页，并阻止原版继续处理。 */
+    /** 主菜单点击：命中右上角任一入口图标时打开播放器设置页，并阻止原版继续处理。 */
     public static boolean onMainMenuClick(int mouseX, int mouseY, int button) {
         try {
             Minecraft mc = Minecraft.getMinecraft();
             if (!(mc.currentScreen instanceof GuiMainMenu)) return false;
-            if (button != 0 || !gearVisible) return false;
+            // 开场动画期间的任何点击都只用于跳过，不穿透到下面看不见的按钮
+            if (HelloIntro.isActive()) {
+                HelloIntro.skip();
+                return true;
+            }
+            if (button != 0) return false;
+            if (!gearVisible) return false;
             if (mouseX < gearX || mouseX >= gearX + gearW
                     || mouseY < gearY || mouseY >= gearY + gearH) return false;
             mc.displayGuiScreen(new LegacyMusicScreen((GuiScreen) null, true));
@@ -548,19 +308,19 @@ public final class SplashGlassHook {
         }
     }
 
-    /** 标题卡片右上角功能入口：三条滑杆组成的小图标，和玻璃按钮同一套材质。 */
+    /** 右上角滑杆图标的入口：点击打开设置页。 */
     private static void drawGear(float alpha, float hover) {
         if (!gearVisible) return;
         float a = alpha * (0.72f + 0.28f * clamp(hover, 0f, 1f));
         beginGlass();
-        // 玻璃底 + 悬停强调色描边
-        roundRect(gearX, gearY, gearX + gearW, gearY + gearH, 8f, 1f, 1f, 1f, 0.055f * a);
+        // 深色玻璃底 + 悬停强调色描边
+        roundRect(gearX, gearY, gearX + gearW, gearY + gearH, 8f, 0f, 0f, 0f, 0.35f * a);
         if (hover > 0.01f) {
             roundRect(gearX - 1f, gearY - 1f, gearX + gearW + 1f, gearY + gearH + 1f, 9f,
-                    ACC_R, ACC_G, ACC_B, 0.35f * a * hover);
+                    ACC_R, ACC_G, ACC_B, 0.70f * a * hover);
         } else {
             roundRect(gearX - 1f, gearY - 1f, gearX + gearW + 1f, gearY + gearH + 1f, 9f,
-                    1f, 1f, 1f, 0.07f * a);
+                    1f, 1f, 1f, 0.18f * a);
         }
         // 三条滑杆 + 滑块
         float lx = gearX + 6f;
@@ -572,55 +332,6 @@ public final class SplashGlassHook {
             roundRect(kx - 1.5f, y - 1.5f, kx + 1.5f, y + 2.5f, 1.5f, 1f, 1f, 1f, 0.92f * a);
         }
         endGlass();
-    }
-
-    /** 单个玻璃按钮（画在自绘背景之上）。hover 为 0~1 的平滑值。 */
-    private static void drawGlassButton(FontRenderer fr, Btn b, float hover, float alpha) {
-        float a = alpha * (b.enabled ? 1f : 0.72f);
-        float h = clamp(hover, 0f, 1f);
-        float r = b.h / 2f;
-        beginGlass();
-        // 落影
-        roundRect(b.x + 1f, b.y + 1.5f, b.x + b.w + 1f, b.y + b.h + 1.5f, r, 0f, 0f, 0f, 0.14f * a);
-        if (h > 0.01f) {
-            // 强调色外发光
-            roundRect(b.x - 2f, b.y - 2f, b.x + b.w + 2f, b.y + b.h + 2f, r + 2f,
-                    ACC_R, ACC_G, ACC_B, 0.20f * a * h);
-        }
-        // 1px 描边：静止是白色细线，悬停时逐渐换成强调色，和 GUI 卡片同一套语言
-        if (h > 0.01f) {
-            roundRect(b.x - 1f, b.y - 1f, b.x + b.w + 1f, b.y + b.h + 1f, r + 1f,
-                    ACC_R, ACC_G, ACC_B, 0.50f * a * h);
-        } else {
-            roundRect(b.x - 1f, b.y - 1f, b.x + b.w + 1f, b.y + b.h + 1f, r + 1f,
-                    1f, 1f, 1f, 0.07f * a);
-        }
-        // 玻璃面
-        roundRect(b.x, b.y, b.x + b.w, b.y + b.h, r, 1f, 1f, 1f, (0.055f + 0.045f * h) * a);
-        // 顶部高光（胶囊形，左右留出圆角，不会顶到边缘）
-        roundRect(b.x + Math.min(14f, b.w * 0.2f), b.y + 1f,
-                b.x + b.w - Math.min(14f, b.w * 0.2f), b.y + Math.min(6f, b.h * 0.32f),
-                Math.max(2f, r - 3f), 1f, 1f, 1f, (0.045f + 0.055f * h) * a);
-        // 底部内阴影
-        rect(b.x + Math.min(14f, b.w * 0.2f), b.y + b.h - 1.5f,
-                b.x + b.w - Math.min(14f, b.w * 0.2f), b.y + b.h - 0.5f, 0f, 0f, 0f, 0.10f * a);
-        endGlass();
-
-        prepareText();
-        int tw = fr.getStringWidth(b.label);
-        int color = !b.enabled ? 0x66FFFFFF : mix(0xF0FFFFFF, 0xFFFFFFFF, h);
-        fr.drawString(b.label, (b.x + b.w / 2) - tw / 2,
-                (b.y + b.h / 2) - 4, alphaColor(color, a));
-    }
-
-    /** 两个 ARGB 颜色按 t 混合（逐通道插值，hover 文字亮度也能平滑过渡）。 */
-    private static int mix(int from, int to, float t) {
-        float k = clamp(t, 0f, 1f);
-        int a = (int) ((from >>> 24) + (((to >>> 24) - (from >>> 24)) * k));
-        int r = (int) (((from >> 16) & 0xFF) + ((((to >> 16) & 0xFF) - ((from >> 16) & 0xFF)) * k));
-        int g = (int) (((from >> 8) & 0xFF) + ((((to >> 8) & 0xFF) - ((from >> 8) & 0xFF)) * k));
-        int bl = (int) ((from & 0xFF) + ((to & 0xFF) - (from & 0xFF)) * k);
-        return (a << 24) | (r << 16) | (g << 8) | bl;
     }
 
     // ---------------------------------------------------------------- 绘制工具
@@ -823,25 +534,6 @@ public final class SplashGlassHook {
             GlStateManager.disableBlend();
         } catch (Throwable ignored) {
             // 忽略
-        }
-    }
-
-    /** 一帧里记录下来的原版按钮。 */
-    private static final class Btn {
-        final int x;
-        final int y;
-        final int w;
-        final int h;
-        final String label;
-        final boolean enabled;
-
-        Btn(int x, int y, int w, int h, String label, boolean enabled) {
-            this.x = x;
-            this.y = y;
-            this.w = w;
-            this.h = h;
-            this.label = label;
-            this.enabled = enabled;
         }
     }
 }

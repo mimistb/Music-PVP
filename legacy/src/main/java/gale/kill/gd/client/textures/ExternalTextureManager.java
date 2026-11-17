@@ -8,6 +8,8 @@
 package gale.kill.gd.client.textures;
 
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Iterator;
@@ -22,10 +24,14 @@ import net.minecraft.util.ResourceLocation;
 public final class ExternalTextureManager {
     private static final Map<String, TextureDimensions> DIMS = new ConcurrentHashMap<String, TextureDimensions>();
     private static final Map<String, ResourceLocation> LOCATIONS = new ConcurrentHashMap<String, ResourceLocation>();
+    /** 读取失败的贴图 + 失败时刻：避免贴图缺失时每帧都去开一次资源流 */
+    private static final Map<String, Long> MISSING_AT = new ConcurrentHashMap<String, Long>();
+    private static final long MISSING_RETRY_MS = 5000L;
 
     public static void clearCache() {
         DIMS.clear();
         LOCATIONS.clear();
+        MISSING_AT.clear();
     }
 
     public static ResourceLocation getTexture(String path) {
@@ -77,12 +83,22 @@ public final class ExternalTextureManager {
          *     at org.benf.cfr.reader.CfrDriverImpl.analyse(CfrDriverImpl.java:76)
          *     at org.benf.cfr.reader.Main.main(Main.java:54)
          */
-        throw new IllegalStateException("Decompilation failed");
+        // 反编译残留的桩实现（永远抛异常）改回真实读取：按资源包路径取原始字节
+        InputStream in = Minecraft.getMinecraft().getResourceManager().getResource(ExternalTextureManager.getTexture(path)).getInputStream();
+        try {
+            ByteArrayOutputStream out = new ByteArrayOutputStream(8192);
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = in.read(buffer)) != -1) {
+                out.write(buffer, 0, read);
+            }
+            return out.toByteArray();
+        }
+        finally {
+            in.close();
+        }
     }
 
-    /*
-     * Exception decompiling
-     */
     public static BufferedImage readTextureImage(String preset, String path) throws IOException {
         /*
          * This method has failed to decompile.  When submitting a bug report, please provide this stack trace, and (if you hold appropriate legal rights) the relevant class file.
@@ -103,7 +119,12 @@ public final class ExternalTextureManager {
          *     at org.benf.cfr.reader.CfrDriverImpl.analyse(CfrDriverImpl.java:76)
          *     at org.benf.cfr.reader.Main.main(Main.java:54)
          */
-        throw new IllegalStateException("Decompilation failed");
+        byte[] bytes = ExternalTextureManager.readTextureBytes(preset, path);
+        BufferedImage image = ImageIO.read(new ByteArrayInputStream(bytes));
+        if (image == null) {
+            throw new IOException("Unsupported image format: " + path);
+        }
+        return image;
     }
 
     /*
@@ -113,6 +134,14 @@ public final class ExternalTextureManager {
         TextureDimensions dims = DIMS.get(path);
         if (dims != null) {
             return dims;
+        }
+        Long failedAt = MISSING_AT.get(path);
+        if (failedAt != null) {
+            // 失败冷却期内直接给 0×0，让调用方走 64×64 兜底，不再反复读盘
+            if (System.currentTimeMillis() - failedAt < MISSING_RETRY_MS) {
+                return new TextureDimensions(0, 0);
+            }
+            MISSING_AT.remove(path);
         }
         try (InputStream in = ExternalTextureManager.open(path);
              MemoryCacheImageInputStream stream = new MemoryCacheImageInputStream(in);){
@@ -130,9 +159,16 @@ public final class ExternalTextureManager {
             }
         }
         catch (IOException e) {
-            throw new IllegalStateException("Missing GD656 texture: " + path, e);
+            // 贴图缺失时不能抛异常：这个方法是渲染热路径上的，调用方已经用 0 表示"尺寸未知"
+            // 并回退到 64×64；原来直接抛 IllegalStateException 会让整帧 HUD 渲染中断。
+            dims = new TextureDimensions(0, 0);
         }
-        DIMS.put(path, dims);
+        // 只缓存成功结果：失败（0×0）不缓存，换资源包 / 重载纹理后还能重新探测
+        if (dims.width > 0 && dims.height > 0) {
+            DIMS.put(path, dims);
+        } else {
+            MISSING_AT.put(path, System.currentTimeMillis());
+        }
         return dims;
     }
 

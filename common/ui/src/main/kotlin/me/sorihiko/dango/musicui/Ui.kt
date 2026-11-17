@@ -21,8 +21,47 @@ internal val RED = Color.fromHex("#FF375F")
 internal typealias Hit = Pair<LayoutBounds, () -> Unit>
 
 internal fun fmtTime(ms: Long): String {
-    val s = max(0L, ms / 1000)
-    return "${s / 60}:${"%02d".format(s % 60)}"
+    val total = max(0L, ms / 1000)
+    val seconds = total % 60
+    // 手动补零：String.format 每次都会走格式化解析，播放栏每帧都要调用两次
+    return "${total / 60}:" + if (seconds < 10) "0$seconds" else seconds.toString()
+}
+
+/**
+ * 点击区域列表。
+ *
+ * 入场动画（[Ui.shifted]）只平移绘制，不改变调用方传入的坐标；
+ * 如果热区仍按原始坐标登记，动画期间点击就会错位。
+ * 这里在登记时自动叠加上当前的绘制平移量，保证热区和看到的画面始终一致。
+ */
+internal class HitList : AbstractMutableList<Hit>() {
+    private val items = ArrayList<Hit>()
+
+    /** 当前绘制平移量，由 [Ui.shifted] 在动画块内维护 */
+    var shiftX = 0f
+    var shiftY = 0f
+
+    override val size: Int get() = items.size
+
+    override fun get(index: Int): Hit = items[index]
+
+    override fun add(index: Int, element: Hit) {
+        items.add(
+            index,
+            if (shiftX == 0f && shiftY == 0f) element
+            else element.first.let { b -> LayoutBounds(b.x + shiftX, b.y + shiftY, b.width, b.height) } to element.second,
+        )
+    }
+
+    override fun removeAt(index: Int): Hit = items.removeAt(index)
+
+    override fun set(index: Int, element: Hit): Hit = items.set(index, element)
+
+    override fun clear() {
+        items.clear()
+        shiftX = 0f
+        shiftY = 0f
+    }
 }
 
 /** 输入框光标：每半秒闪一次 */
@@ -47,8 +86,8 @@ internal class Ui {
     /** 当前页面开始入场动画的时间 */
     var pageAt = 0L
 
-    /** 这一帧登记的点击区域，按登记顺序优先 */
-    val hits = mutableListOf<Hit>()
+    /** 这一帧登记的点击区域，按登记顺序优先（登记时会自动补上动画平移量） */
+    val hits = HitList()
 
     /** 中英混排：英文用菜单字体，中日韩 / 符号用系统字体（玻璃层画完后统一画） */
     val mt = MixedText()
@@ -67,6 +106,23 @@ internal class Ui {
 
     fun trim(s: String, maxW: Float, size: Float, font: String = Theme.FONT_REGULAR): String =
         mt.trim(s, maxW, size, font)
+
+    /**
+     * 从左侧裁掉字符，直到剩下的尾部能放进 [maxW]（输入框太长时显示末尾）。
+     * 宽度随起始下标单调递减，用二分找最短可行起点，避免长文本逐字符重测（O(n) → O(log n)）。
+     */
+    fun trimStart(s: String, maxW: Float, size: Float, font: String = Theme.FONT_REGULAR): String {
+        if (s.isEmpty() || width(s, size, font) <= maxW) return s
+        var lo = 1
+        var hi = s.length
+        while (lo < hi) {
+            val mid = (lo + hi) / 2
+            if (width(s.substring(mid), size, font) <= maxW) hi = mid else lo = mid + 1
+        }
+        val tail = s.substring(lo)
+        // 单个字符仍放不下时至少保留最后一个字符（和原来的行为一致）
+        return tail.ifEmpty { s.substring(s.length - 1) }
+    }
 
     fun wrap2(s: String, maxW: Float, size: Float, font: String = Theme.FONT_REGULAR): List<String> =
         mt.wrap2(s, maxW, size, font)
@@ -94,7 +150,12 @@ internal class Ui {
 
     // ---------------------------------------------------------------- 图形 / 控件
 
-    fun hover(b: LayoutBounds) = b.contains(mx, my)
+    // 入场动画期间绘制整体平移过，鼠标判定要减掉同一个平移量，否则高亮落在可见行下方
+    fun hover(b: LayoutBounds): Boolean {
+        val hx = mx - hits.shiftX
+        val hy = my - hits.shiftY
+        return hx >= b.x && hx < b.right && hy >= b.y && hy < b.bottom
+    }
 
     fun card(b: LayoutBounds, color: Color, radius: Float = 10f) =
         ctx.drawShape(b, ShapeStyle(color, radius))
@@ -192,7 +253,7 @@ internal class Ui {
             icon(glyph, tx + 6f, b.y + b.height / 2f, 12f, Theme.TEXT_PRIMARY)
             tx += 18f
         }
-        text(label, tx, b.y + b.height / 2f - 12f * 0.39f - 0.5f, 12f, Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD)
+        text(label, tx, Theme.textCenterY(b.y + b.height / 2f, 12f), 12f, Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD)
         hits += b to action
     }
 
@@ -252,9 +313,14 @@ internal class Ui {
         ctx.pushOpacity(alpha)
         mt.shiftX += dx
         mt.shiftY += dy
+        // 热区同步平移：动画期间点击的仍是屏幕上看到的位置
+        hits.shiftX += dx
+        hits.shiftY += dy
         try {
             block()
         } finally {
+            hits.shiftX -= dx
+            hits.shiftY -= dy
             mt.shiftX -= dx
             mt.shiftY -= dy
             ctx.popOpacity()

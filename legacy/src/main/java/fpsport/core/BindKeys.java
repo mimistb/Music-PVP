@@ -46,4 +46,22 @@ public final class BindKeys {
         }
         return code > 0 && Keyboard.isKeyDown(code);
     }
+
+    /**
+     * 组合键判断：主键（键盘或鼠标）按着，并且所有修饰键也按着。
+     * mods 为空时等价于 {@link #isDown(int)}。
+     */
+    public static boolean isDown(int code, int[] mods) {
+        if (!isDown(code)) {
+            return false;
+        }
+        if (mods != null) {
+            for (int mod : mods) {
+                if (mod <= 0 || !Keyboard.isKeyDown(mod)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
 }

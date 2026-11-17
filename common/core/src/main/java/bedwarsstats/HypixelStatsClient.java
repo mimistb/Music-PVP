@@ -175,10 +175,12 @@ public final class HypixelStatsClient {
     }
 
     private void lookupIdentity(String playerName, long nowMillis) {
+        // 先一次性写好状态与文案再通知：原来 state / message 分两次改，会触发两次回调，
+        // 宿主在两次回调之间会读到"状态是 Loading 但文案还是上一条"的中间态。
         errorMessage = "";
+        statusMessage = "正在解析玩家名…";
         state = State.LOADING;
         notifyChanged();
-        setStatusMessage("正在解析玩家名…");
 
         final long requestGeneration = ++generation;
         final PublicStatsSource.Identity identity = PublicStatsSource.resolve(transport, playerName);
@@ -217,9 +219,9 @@ public final class HypixelStatsClient {
 
         lastRequestAtMillis = nowMillis;
         errorMessage = "";
+        statusMessage = "正在获取 Bed Wars 统计数据…";
         state = State.LOADING;
         notifyChanged();
-        setStatusMessage("正在获取 Bed Wars 统计数据…");
 
         final long requestGeneration = ++generation;
         final PublicStatsSource.Fetch fetched =
@@ -252,15 +254,13 @@ public final class HypixelStatsClient {
     private void insertCacheEntry(String uuid, BedWarsStats newStats, long nowMillis) {
         pruneExpiredCache(nowMillis);
         if (!cache.containsKey(uuid) && cache.size() >= MAXIMUM_CACHE_ENTRIES) {
-            String leastRecentlyUsedKey = null;
-            long leastAccess = Long.MAX_VALUE;
-            for (Map.Entry<String, CacheEntry> entry : cache.entrySet()) {
-                if (entry.getValue().lastAccessedAtMillis < leastAccess) {
-                    leastAccess = entry.getValue().lastAccessedAtMillis;
-                    leastRecentlyUsedKey = entry.getKey();
-                }
+            // accessOrder = true 的 LinkedHashMap：迭代器第一个就是最久未访问的条目，
+            // 直接删它即可（原来的全表扫描是 O(n)，每次插入新玩家都要走一遍）。
+            final Iterator<String> eldest = cache.keySet().iterator();
+            if (eldest.hasNext()) {
+                eldest.next();
+                eldest.remove();
             }
-            if (leastRecentlyUsedKey != null) cache.remove(leastRecentlyUsedKey);
         }
         cache.put(uuid, new CacheEntry(newStats, nowMillis + CACHE_LIFETIME_MILLIS, nowMillis));
     }
@@ -268,7 +268,7 @@ public final class HypixelStatsClient {
     private void applyStats(BedWarsStats newStats, String status) {
         stats = newStats;
         errorMessage = "";
-        setStatusMessage(status);
+        statusMessage = status == null ? "" : status;
         state = State.READY;
         notifyChanged();
     }
@@ -282,7 +282,7 @@ public final class HypixelStatsClient {
 
     private void setError(String message) {
         errorMessage = message == null ? "" : message;
-        setStatusMessage("统计查询失败");
+        statusMessage = "统计查询失败";
         state = State.ERROR;
         notifyChanged();
     }

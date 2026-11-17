@@ -16,18 +16,20 @@ public class AutoText extends Feature {
 
     public static final int MAX_CAPACITY = 20;
 
-    /** 一条「按键 → 消息」记录，不可变。 */
+    /** 一条「组合键 → 消息」记录，不可变。mods 是修饰键码（可为空数组）。 */
     public static final class Entry {
         public final int keyCode;
+        public final int[] mods;
         public final String message;
 
-        public Entry(int keyCode, String message) {
+        public Entry(int keyCode, int[] mods, String message) {
             this.keyCode = keyCode;
+            this.mods = mods == null ? new int[0] : mods.clone();
             this.message = message == null ? "" : message;
         }
 
         public Entry(Entry other) {
-            this(other.keyCode, other.message);
+            this(other.keyCode, other.mods, other.message);
         }
     }
 
@@ -36,12 +38,12 @@ public class AutoText extends Feature {
 
     public AutoText() {
         super("AutoText");
-        entries.add(new Entry(0x22, "gg"));
+        entries.add(new Entry(0x22, new int[0], "gg"));
     }
 
-    /** 追加一条；容量已满或键位重复时返回 false。 */
+    /** 追加一条；容量已满或组合键重复时返回 false。 */
     public boolean addEntry(Entry entry) {
-        if (entry == null || entries.size() >= MAX_CAPACITY || hasKey(entry.keyCode)) {
+        if (entry == null || entries.size() >= MAX_CAPACITY || hasKey(entry)) {
             return false;
         }
         entries.add(new Entry(entry));
@@ -54,13 +56,13 @@ public class AutoText extends Feature {
         }
     }
 
-    /** 替换第 index 条；越界或与其它条目键位冲突时返回 false。 */
+    /** 替换第 index 条；越界或与其它条目组合键冲突时返回 false。 */
     public boolean editEntry(int index, Entry entry) {
         if (entry == null || index < 0 || index >= entries.size()) {
             return false;
         }
         for (int i = 0; i < entries.size(); i++) {
-            if (i != index && entries.get(i).keyCode == entry.keyCode && entry.keyCode != 0) {
+            if (i != index && sameCombo(entries.get(i), entry) && entry.keyCode != 0) {
                 return false;
             }
         }
@@ -68,16 +70,36 @@ public class AutoText extends Feature {
         return true;
     }
 
-    private boolean hasKey(int keyCode) {
-        if (keyCode == 0) {
+    private boolean hasKey(Entry target) {
+        if (target == null || target.keyCode == 0) {
             return false;
         }
         for (Entry entry : entries) {
-            if (entry.keyCode == keyCode) {
+            if (sameCombo(entry, target)) {
                 return true;
             }
         }
         return false;
+    }
+
+    /** 主键相同且修饰键集合相同视为冲突。 */
+    private static boolean sameCombo(Entry a, Entry b) {
+        if (a.keyCode != b.keyCode) {
+            return false;
+        }
+        if (a.mods.length != b.mods.length) {
+            return false;
+        }
+        java.util.HashSet<Integer> set = new java.util.HashSet<>();
+        for (int mod : a.mods) {
+            set.add(mod);
+        }
+        for (int mod : b.mods) {
+            if (!set.contains(mod)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /** 宿主在按键回调里调用（对应源码的 EventKey）。 */
@@ -94,7 +116,17 @@ public class AutoText extends Feature {
             snapshot = new ArrayList<>(entries);
         }
         for (Entry entry : snapshot) {
-            if (entry.keyCode == key && !entry.message.isEmpty()) {
+            if (entry.keyCode != key || entry.message.isEmpty()) {
+                continue;
+            }
+            boolean modsDown = true;
+            for (int mod : entry.mods) {
+                if (mod <= 0 || !org.lwjgl.input.Keyboard.isKeyDown(mod)) {
+                    modsDown = false;
+                    break;
+                }
+            }
+            if (modsDown) {
                 mc.thePlayer.sendChatMessage(entry.message);
             }
         }

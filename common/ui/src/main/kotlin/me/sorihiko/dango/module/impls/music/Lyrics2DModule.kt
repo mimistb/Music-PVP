@@ -14,6 +14,8 @@ import me.sorihiko.dango.module.values.FloatValue
 import me.sorihiko.dango.module.values.IntValue
 import me.sorihiko.dango.module.values.ModuleValue
 import me.sorihiko.dango.music.MusicPlayer
+import me.sorihiko.dango.ui.GlassStyle
+import me.sorihiko.dango.ui.HudSnap
 import me.sorihiko.dango.ui.LayoutBounds
 import me.sorihiko.dango.ui.ShadowStyle
 import me.sorihiko.dango.ui.Theme
@@ -80,6 +82,22 @@ class Lyrics2DModule : Module() {
     /** 换句时的淡入进度 */
     private var alpha = 1f
     private var lastKey: String? = null
+
+    /**
+     * 面板玻璃样式：半径跟着行数 / 字号变，按 0.5px 粒度缓存，
+     * 原来每帧都 copy 一次 GlassStyle（含 ShadowStyle / Vec2 / Color）。
+     */
+    private val panelGlassCache = arrayOfNulls<GlassStyle>(40)
+    private val panelShadow = ShadowStyle(Color(0f, 0f, 0f, 0.14f), 8f, Vec2(0f, -2f))
+
+    private fun panelGlassFor(radius: Float): GlassStyle {
+        val idx = (radius * 2f).toInt().coerceIn(0, 39)
+        val cached = panelGlassCache[idx]
+        if (cached != null) return cached
+        val style = Theme.GLASS_WINDOW.copy(radius = idx * 0.5f, shadow = panelShadow)
+        panelGlassCache[idx] = style
+        return style
+    }
 
     /** 颜色缓存：换句 / 换颜色都不用每帧 copy */
     private var colorIdx = -1
@@ -354,8 +372,14 @@ class Lyrics2DModule : Module() {
                     dragDY = my - y
                 }
                 if (dragging) {
-                    x = (mx - dragDX).coerceIn(0f, (lw - contentW).coerceAtLeast(0f))
-                    y = (my - dragDY).coerceIn(0f, (lh - contentH).coerceAtLeast(0f))
+                    val snap = HudSnap.snap(
+                        "lyrics",
+                        (mx - dragDX - padX).coerceIn(0f, (lw - contentW - padX * 2f).coerceAtLeast(0f)),
+                        (my - dragDY - padY).coerceIn(0f, (lh - contentH - padY * 2f).coerceAtLeast(0f)),
+                        contentW + padX * 2f, contentH + padY * 2f, lw, lh,
+                    )
+                    x = snap.x + padX
+                    y = snap.y + padY
                     posX.setValue(if (lw > contentW) x / (lw - contentW) else 0f)
                     posY.setValue(if (lh > contentH) y / (lh - contentH) else 0f)
                 }
@@ -365,6 +389,10 @@ class Lyrics2DModule : Module() {
         }
 
         // 换句：开着"淡化平滑"就淡入，关掉就直接出现
+        HudSnap.register(
+            "lyrics",
+            LayoutBounds(x - padX, y - padY, contentW + padX * 2f, contentH + padY * 2f),
+        )
         val key = cur ?: nxt ?: fallback
         if (key != lastKey) {
             lastKey = key
@@ -380,10 +408,7 @@ class Lyrics2DModule : Module() {
             ctx.pushOpacity(alpha)
             if (glass.get()) {
                 val panel = LayoutBounds(x - padX, y - padY, contentW + padX * 2f, contentH + padY * 2f)
-                ctx.drawGlass(panel, Theme.GLASS_WINDOW.copy(
-                    radius = min(panel.height / 2f, 18f),
-                    shadow = ShadowStyle(Color(0f, 0f, 0f, 0.14f), 8f, Vec2(0f, -2f)),
-                ))
+                ctx.drawGlass(panel, panelGlassFor(min(panel.height / 2f, 18f)))
             }
 
             mt.clear()
@@ -450,6 +475,7 @@ class Lyrics2DModule : Module() {
                 }
             }
             ctx.popOpacity()
+            HudSnap.drawGuides(ctx)
             ctx.popTransform()
             mt.flush(uiScale)
         } finally {

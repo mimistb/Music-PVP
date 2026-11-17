@@ -14,6 +14,7 @@ import me.sorihiko.dango.module.ModuleManager
 import me.sorihiko.dango.module.values.BooleanValue
 import me.sorihiko.dango.module.values.FloatValue
 import me.sorihiko.dango.module.values.IntValue
+import me.sorihiko.dango.module.values.KeyBindValue
 import me.sorihiko.dango.module.values.ModuleValue
 import me.sorihiko.dango.module.values.StringValue
 
@@ -41,12 +42,34 @@ class ConfigManager(
     private var ready = false
     private var lastSaved: String? = null
 
-    private fun modules(): List<Module> = moduleManager.modules.values.flatten()
+    /** 孤儿键清理的保留规则；来自配置文件里的 `schemaPolicy`，缺省按保守策略 */
+    private var cleanupPolicy = ConfigSchema.Policy()
+
+    /** 统一按模块注册顺序遍历，保证读配置 / 存盘 / 档案应用顺序完全一致 */
+    private fun modules(): List<Module> = moduleManager.all()
+
+    /** schema 定义：模块名 → (设置项名 → 值类型)，供 [ConfigSchema] 判断孤儿键 */
+    private fun definitions(): Map<String, Map<String, Class<*>>> {
+        val out = LinkedHashMap<String, Map<String, Class<*>>>()
+        for (module in modules()) {
+            val fields = LinkedHashMap<String, Class<*>>()
+            for (field in valueFields(module)) fields[field.name] = field.type
+            out[module.name] = fields
+        }
+        return out
+    }
+
+    /**
+     * 反射结果按类缓存：类结构在运行期不会变化，而自动存盘每 2 秒就要扫一遍所有模块，
+     * 重复调用 declaredFields / isAnnotationPresent 是纯开销。缓存后只在第一次付出反射成本。
+     */
+    private val fieldCache = java.util.concurrent.ConcurrentHashMap<Class<*>, List<Field>>()
 
     private fun valueFields(module: Module): List<Field> =
-        module.javaClass.declaredFields.filter {
-            it.isAnnotationPresent(ModuleValue::class.java)
-        }.onEach { it.isAccessible = true }
+        fieldCache[module.javaClass] ?: module.javaClass.declaredFields
+            .filter { it.isAnnotationPresent(ModuleValue::class.java) }
+            .onEach { it.isAccessible = true }
+            .also { fieldCache[module.javaClass] = it }
 
     // ---------------------------------------------------------------- 读取
 
@@ -63,6 +86,9 @@ class ConfigManager(
             val text = String(Files.readAllBytes(file), StandardCharsets.UTF_8)
             val root = JsonParser().parse(text).asJsonObject
             val enabledMap = mutableMapOf<Module, Boolean>()
+
+            // 先做 schema 迁移 + 孤儿键清理，再按字段读取（清理结果会写回文件）
+            runSchemaPass(root)
 
             for (module in modules()) {
                 val obj = root.get(module.name) as? JsonObject ?: continue
@@ -84,13 +110,71 @@ class ConfigManager(
                     }
                 }
             }
-            // 界面偏好（设置页分组的展开状态）和模块设置存在同一个文件里
-            (root.get("ui") as? JsonObject)?.let { UiPrefs.load(it) }
-
             pendingEnabled = enabledMap
             DangoLogger.info("Config loaded: {}", file.toString())
         } catch (e: Exception) {
             DangoLogger.error("Config load failed, using defaults. {}", e)
+        }
+    }
+
+    /**
+     * schema 迁移 + 孤儿键清理。
+     *
+     * 读取配置里的 `schemaPolicy` 作为保留规则；迁移/清理确实改动了结构时：
+     * 1) 按 `backup` 把原文件备份成 `config.json.bak`；
+     * 2) 把过程写进 `config-cleanup.log`，同时输出到控制台日志；
+     * 3) 立刻把清理后的结构写回，避免下次启动重复清理。
+     */
+    private fun runSchemaPass(root: JsonObject) {
+        cleanupPolicy = ConfigSchema.policyFrom(root)
+        val report = try {
+            ConfigSchema.migrate(root, definitions(), emptySet(), cleanupPolicy)
+        } catch (e: Exception) {
+            DangoLogger.error("Config schema pass failed. {}", e)
+            return
+        }
+        for (line in report.log) DangoLogger.info("Config schema: {}", line)
+        if (!report.dirty) return
+
+        try {
+            if (cleanupPolicy.backup) {
+                val backup = file.resolveSibling(file.fileName.toString() + ".bak")
+                Files.copy(file, backup, StandardCopyOption.REPLACE_EXISTING)
+            }
+            writeCleanupLog(report)
+            Files.write(file, gson.toJson(root).toByteArray(StandardCharsets.UTF_8))
+        } catch (e: Exception) {
+            DangoLogger.error("Config schema writeback failed. {}", e)
+        }
+    }
+
+    /** 清理日志：每条一行，带时间戳，追加写入 config/Music PVP/config-cleanup.log */
+    private fun writeCleanupLog(report: ConfigSchema.Report) {
+        val logFile = file.resolveSibling("config-cleanup.log")
+        val stamp = java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.ROOT)
+            .format(java.util.Date())
+        val text = buildString {
+            append('[').append(stamp).append("] ").append(report.summary()).append('\n')
+            if (report.removedModules.isNotEmpty()) {
+                append("  移除模块: ").append(report.removedModules.joinToString(", ")).append('\n')
+            }
+            if (report.removedValues.isNotEmpty()) {
+                append("  移除设置项: ").append(report.removedValues.joinToString(", ")).append('\n')
+            }
+            if (report.removedUiKeys.isNotEmpty()) {
+                append("  移除界面键: ").append(report.removedUiKeys.joinToString(", ")).append('\n')
+            }
+        }
+        try {
+            Files.createDirectories(logFile.parent)
+            Files.write(
+                logFile,
+                text.toByteArray(StandardCharsets.UTF_8),
+                java.nio.file.StandardOpenOption.CREATE,
+                java.nio.file.StandardOpenOption.APPEND,
+            )
+        } catch (e: Exception) {
+            DangoLogger.warn("Config cleanup log failed: {}", e.message ?: e.javaClass.simpleName)
         }
     }
 
@@ -100,6 +184,11 @@ class ConfigManager(
             is IntValue -> value.setValue(json.asInt)
             is FloatValue -> value.setValue(json.asFloat)
             is StringValue -> value.set(json.asString)
+            // 组合键：新格式是 "42+33" 字符串；旧配置是单个 Int 键码，直接按单键读回
+            is KeyBindValue -> value.load(
+                if (json.isJsonPrimitive && json.asJsonPrimitive.isNumber) json.asInt.toString()
+                else json.asString,
+            )
         }
     }
 
@@ -107,6 +196,8 @@ class ConfigManager(
 
     private fun serialize(): String {
         val root = JsonObject()
+        root.addProperty(ConfigSchema.KEY, ConfigSchema.CURRENT)
+        root.add("schemaPolicy", ConfigSchema.policyTo(cleanupPolicy))
         for (module in modules()) {
             val obj = JsonObject()
             obj.addProperty("enabled", module.enabled)
@@ -117,15 +208,12 @@ class ConfigManager(
                     is IntValue -> values.addProperty(field.name, v.value)
                     is FloatValue -> values.addProperty(field.name, v.value)
                     is StringValue -> values.addProperty(field.name, v.get())
+                    is KeyBindValue -> values.addProperty(field.name, v.storage())
                 }
             }
             obj.add("values", values)
             root.add(module.name, obj)
         }
-        // 界面偏好（设置页分组展开状态），与模块设置一起存盘、一起上锁
-        val ui = JsonObject()
-        UiPrefs.store(ui)
-        root.add("ui", ui)
         return gson.toJson(root)
     }
 
@@ -152,18 +240,30 @@ class ConfigManager(
     fun onTick(e: TickEvent) {
         ticks++
         if (!ready && ticks >= 3) {
+            // 配置里出现的模块按存盘值恢复；没出现的（旧配置缺键 / 新版本新增）按模块声明的默认值走。
+            // 这样既尊重用户关闭，也不再需要模块在 init() 里提前写 enabled（那时监听器还没注册）。
+            val restored = HashSet<Module>()
             pendingEnabled?.forEach { (module, enabled) ->
                 try {
                     module.enabled = enabled
+                    restored.add(module)
                 } catch (ex: Exception) {
                     DangoLogger.warn("Restore module state failed: {}", module.name)
+                }
+            }
+            for (module in modules()) {
+                if (module in restored) continue
+                try {
+                    module.enabled = module.defaultEnabled
+                } catch (ex: Exception) {
+                    DangoLogger.warn("Apply module default failed: {}", module.name)
                 }
             }
             pendingEnabled = null
             if (fresh) {
                 for (module in modules()) {
                     try {
-                        module.enabled = true
+                        module.enabled = module.enabledOnFreshConfig
                     } catch (ex: Exception) {
                         DangoLogger.warn("Enable module failed: {}", module.name)
                     }
@@ -317,7 +417,6 @@ class ConfigManager(
                 }
             }
         }
-        (root.get("ui") as? JsonObject)?.let { UiPrefs.load(it) }
         // 应用后马上落盘，避免玩家下次启动又回到旧参数
         saveIfChanged()
     }

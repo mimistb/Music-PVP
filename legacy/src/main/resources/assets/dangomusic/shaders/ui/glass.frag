@@ -70,9 +70,18 @@ void main() {
     col.g = backdrop(v_Screen + off).g;
     col.b = backdrop(v_Screen + off * (1.0 - u_Dispersion)).b;
 
-    // 饱和度增强 + 亮度上限（自适应暗化，亮背景下也能看清白字）
+    // 饱和度收敛：液态玻璃是灰白雾面材质，背景再花也不该透出高饱和色
     float l = luma(col);
-    col = max(mix(vec3(l), col, u_Saturation), 0.0);
+    col = max(mix(vec3(l), col, u_Saturation * 0.45), 0.0);
+
+    // 灰白基底：背景过暗（地下 / 夜晚 / 聊天黑底 / 抓帧失败）时把面板抬到中性灰，
+    // 越暗混得越多，同时保留一部分背景明暗结构，避免整块发黑。
+    // 注意 smoothstep 的 edge0 必须小于 edge1，反向写法是 GLSL 未定义行为（会整块发白）。
+    l = luma(col);
+    float grayBase = (1.0 - smoothstep(0.0, 0.45, l)) * 0.45;
+    col = mix(col, vec3(0.46, 0.48, 0.52), grayBase);
+
+    // 亮度上限：亮背景（天空 / 雪地）压到 u_MaxLuma，保证白字可读
     l = luma(col);
     if (l > u_MaxLuma) col *= u_MaxLuma / l;
     col = mix(col, u_Tint.rgb, u_Tint.a);

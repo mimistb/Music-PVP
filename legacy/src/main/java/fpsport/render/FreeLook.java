@@ -7,6 +7,7 @@ import net.minecraft.entity.player.EntityPlayer;
 import net.minecraftforge.client.event.EntityViewRenderEvent;
 
 import org.lwjgl.input.Keyboard;
+import org.lwjgl.opengl.Display;
 
 /**
  * 自由视角：按住绑定键时相机脱离人物朝向，松开立刻还原。
@@ -23,6 +24,8 @@ public class FreeLook extends Feature {
 
     /** 按住式绑定键，默认左 Alt。 */
     public static int bind = Keyboard.KEY_LMENU;
+    /** 组合键的修饰键（Shift / Ctrl / Alt 的键码），为空表示单键。 */
+    public static int[] bindMods = new int[0];
 
     /** 相机灵敏度倍率，1.0 = 与原版鼠标一致。 */
     public static float sensitivity = 1.0f;
@@ -57,11 +60,12 @@ public class FreeLook extends Feature {
     public void onUpdate() {
         Minecraft mc = Minecraft.getMinecraft();
         if (mc == null) return;
-        if (mc.currentScreen != null || mc.thePlayer == null) {
+        // 窗口失焦（Alt+Tab）时按键状态可能卡住，必须立即退出，否则会一直停在第三人称看着自己的皮肤
+        if (mc.currentScreen != null || mc.thePlayer == null || !Display.isActive()) {
             deactivate(mc);
             return;
         }
-        if (BindKeys.isDown(bind)) {
+        if (BindKeys.isDown(bind, bindMods)) {
             if (!perspectiveToggled) activate(mc);
         } else if (perspectiveToggled) {
             deactivate(mc);
@@ -70,6 +74,7 @@ public class FreeLook extends Feature {
 
     private static void activate(Minecraft mc) {
         EntityPlayer player = mc.thePlayer;
+        if (player == null) return;
         perspectiveToggled = true;
         previousPerspective = mc.gameSettings.thirdPersonView;
         mc.gameSettings.thirdPersonView = 1;
@@ -83,7 +88,11 @@ public class FreeLook extends Feature {
         if (!perspectiveToggled) return;
         perspectiveToggled = false;
         if (mc == null) return;
-        mc.gameSettings.thirdPersonView = previousPerspective;
+        // 只还原「仍然是我们强制的那一档」；自由视角期间玩家自己按过 F5 时以他的选择为准，
+        // 避免退出后把视角强行改回去（或反过来把人留在第三人称里）。
+        if (mc.gameSettings.thirdPersonView == 1) {
+            mc.gameSettings.thirdPersonView = previousPerspective;
+        }
         EntityPlayer player = mc.thePlayer;
         if (player != null) {
             player.rotationYaw = frozenYaw;
@@ -100,15 +109,18 @@ public class FreeLook extends Feature {
      * 于是「鼠标转相机、人物不动」。
      */
     public static void applyCamera(EntityViewRenderEvent.CameraSetup event) {
-        if (!using || !perspectiveToggled) return;
+        if (!perspectiveToggled) return;
         Minecraft mc = Minecraft.getMinecraft();
-        // 打开任意界面时立即退出自由视角，避免相机与人物朝向被永久冻结
-        if (mc.currentScreen != null) {
+        // 模块被关掉 / 打开任意界面：立刻还原视角与朝向，避免相机和人物朝向被永久冻结
+        if (!using || mc.currentScreen != null) {
             deactivate(mc);
             return;
         }
         EntityPlayer player = mc.thePlayer;
-        if (player == null) return;
+        if (player == null) {
+            deactivate(mc);
+            return;
+        }
 
         float deltaYaw = player.rotationYaw - frozenYaw;
         float deltaPitch = player.rotationPitch - frozenPitch;

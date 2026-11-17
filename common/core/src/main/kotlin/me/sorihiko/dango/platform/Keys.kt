@@ -12,16 +12,25 @@ object Keys {
     const val BACK = 14
     const val TAB = 15
     const val RETURN = 28
+    const val LCONTROL = 29
     const val A = 30
     const val F = 33
+    const val K = 37
+    const val R = 19
     const val L = 38
+    const val LSHIFT = 42
     const val X = 45
     const val C = 46
     const val V = 47
     const val M = 50
     const val PERIOD = 52
+    const val RSHIFT = 54
+    const val LMENU = 56
     const val SPACE = 57
+    const val CAPITAL = 58
     const val NUMPADENTER = 156
+    const val RCONTROL = 157
+    const val RMENU = 184
     const val HOME = 199
     const val UP = 200
     const val PRIOR = 201
@@ -62,6 +71,15 @@ object Keys {
     }
 
     fun name(key: Int): String? = names[key]
+
+    /**
+     * 单独的修饰键（Shift / Ctrl / Alt / Win）。录制快捷键时要忽略这些键：
+     * 它们通常和别的键组合使用，单独绑定后既难以触发，也会抢走组合键。
+     * CapsLock 不在此列（它是独立开关，可以正常绑定）。
+     */
+    fun isModifier(key: Int): Boolean = key == LSHIFT || key == RSHIFT ||
+            key == LCONTROL || key == RCONTROL || key == LMENU || key == RMENU ||
+            key == 219 /* LMETA */ || key == 220 /* RMETA */
 
     /** 能输进文本框的字符（和原版 ChatAllowedCharacters 一样：不能是 § 和控制字符） */
     fun isAllowedChar(c: Char): Boolean = c != '§' && c >= ' ' && c != '\u007f'

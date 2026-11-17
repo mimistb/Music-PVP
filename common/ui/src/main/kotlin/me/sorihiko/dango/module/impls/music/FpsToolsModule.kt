@@ -6,8 +6,10 @@ import me.sorihiko.dango.module.ModuleMeta
 import me.sorihiko.dango.module.values.BooleanValue
 import me.sorihiko.dango.module.values.FloatValue
 import me.sorihiko.dango.module.values.IntValue
+import me.sorihiko.dango.module.values.KeyBindValue
 import me.sorihiko.dango.module.values.ModuleValue
 import me.sorihiko.dango.module.values.StringValue
+import me.sorihiko.dango.platform.Keys
 import me.sorihiko.dango.utils.Color
 
 /**
@@ -65,8 +67,8 @@ class FpsToolsModule : Module() {
     @ModuleValue("平滑缩放", "按住缩放键改变视野")
     val smoothZoom = BooleanValue(true)
 
-    @ModuleValue("缩放按键", "LWJGL 键码，0 = 不使用")
-    val keyZoom = IntValue(0, 255, 46)
+    @ModuleValue("缩放按键", "按住触发，支持单键 / 组合键")
+    val keyZoom = KeyBindValue(intArrayOf(Keys.C))
 
     @ModuleValue("视野缓动", "缩放时视野平滑过渡")
     val zoomSmoothCamera = BooleanValue(false)
@@ -86,8 +88,8 @@ class FpsToolsModule : Module() {
     @ModuleValue("自由视角", "按住切第三人称，松开还原")
     val freeLook = BooleanValue(false)
 
-    @ModuleValue("自由视角按键", "LWJGL 键码")
-    val keyFreeLook = IntValue(0, 255, 56)
+    @ModuleValue("自由视角按键", "按住触发，支持单键 / 组合键")
+    val keyFreeLook = KeyBindValue(intArrayOf(Keys.LMENU))
 
     @ModuleValue("自由视角灵敏度", "0.2 ~ 3.0 倍")
     val freeLookSens = FloatValue(0.2f, 3f, 1f, 2)
@@ -139,26 +141,26 @@ class FpsToolsModule : Module() {
     @ModuleValue("快捷发言", "按下按键直接发送一条消息")
     val autoText = BooleanValue(false)
 
-    @ModuleValue("快捷发言按键", "LWJGL 键码")
-    val keyAutoText = IntValue(0, 255, 34)
+    @ModuleValue("快捷发言按键", "按下触发，支持单键 / 组合键")
+    val keyAutoText = KeyBindValue(intArrayOf(34))
 
     @ModuleValue("快捷发言内容", "要发送的文字")
     val msgAutoText = StringValue("gg")
 
-    @ModuleValue("快捷发言 2 按键", "LWJGL 键码，0 = 不使用")
-    val keyQuick2 = IntValue(0, 255, 0)
+    @ModuleValue("快捷发言 2 按键", "支持单键 / 组合键，留空 = 不使用")
+    val keyQuick2 = KeyBindValue()
 
     @ModuleValue("快捷发言 2 内容", "要发送的文字")
     val msgQuick2 = StringValue("")
 
-    @ModuleValue("快捷发言 3 按键", "LWJGL 键码，0 = 不使用")
-    val keyQuick3 = IntValue(0, 255, 0)
+    @ModuleValue("快捷发言 3 按键", "支持单键 / 组合键，留空 = 不使用")
+    val keyQuick3 = KeyBindValue()
 
     @ModuleValue("快捷发言 3 内容", "要发送的文字")
     val msgQuick3 = StringValue("")
 
-    @ModuleValue("快捷发言 4 按键", "LWJGL 键码，0 = 不使用")
-    val keyQuick4 = IntValue(0, 255, 0)
+    @ModuleValue("快捷发言 4 按键", "支持单键 / 组合键，留空 = 不使用")
+    val keyQuick4 = KeyBindValue()
 
     @ModuleValue("快捷发言 4 内容", "要发送的文字")
     val msgQuick4 = StringValue("")
@@ -234,40 +236,11 @@ class FpsToolsModule : Module() {
     @ModuleValue("聊天透明度", "0 ~ 100%，作用于聊天背景与文字")
     val chatOpacity = IntValue(0, 100, 100)
 
-    // ---------------------------------------------------------------- 第四批：反作弊
+    @ModuleValue("平滑聊天", "消息逐条淡入 · 滚轮按帧平滑吸附")
+    val chatSmooth = BooleanValue(false)
 
-    @ModuleValue("反作弊", "信号聚合 · 确认 · 标签")
-    val acEnabled = BooleanValue(true)
-
-    @ModuleValue("提示音", "确认作弊时播放提示音")
-    val acSound = BooleanValue(true)
-
-    @ModuleValue("自动格挡检查", "启用 Autoblock 检查项")
-    val acAutoBlock = BooleanValue(true)
-
-    @ModuleValue("合法搭桥检查", "启用 Legit Scaffold 检查项")
-    val acLegitScaffold = BooleanValue(true)
-
-    @ModuleValue("搭桥 A 检查", "启用 Scaffold A 检查项")
-    val acScaffoldA = BooleanValue(true)
-
-    @ModuleValue("搭桥 B 检查", "启用 Scaffold B 检查项")
-    val acScaffoldB = BooleanValue(true)
-
-    @ModuleValue("无减速检查", "启用 No Slow 检查项")
-    val acNoSlow = BooleanValue(true)
-
-    @ModuleValue("确认条数", "窗口内累计多少条信号算确认，1 ~ 10")
-    val acConfirmCount = IntValue(1, 10, 3)
-
-    @ModuleValue("统计窗口", "秒，1 ~ 60")
-    val acWindowSeconds = IntValue(1, 60, 10)
-
-    @ModuleValue("置信度门槛", "单条信号达到即确认，0 ~ 1")
-    val acMinConfidence = FloatValue(0f, 1f, 0.6f, 2)
-
-    @ModuleValue("合法搭桥倍率", "低置信度项门槛放大倍数，1 ~ 5")
-    val acLegitMultiplier = IntValue(1, 5, 2)
+    @ModuleValue("聊天头像", "每条玩家消息左侧显示头像（可放 config/Music PVP/avatars/<玩家名>.png 覆盖）")
+    val chatAvatars = BooleanValue(false)
 
     // ---------------------------------------------------------------- 第四批：聊天数据
 
@@ -312,28 +285,7 @@ class FpsToolsModule : Module() {
     @ModuleValue("平均时长取整", "秒，1 ~ 60")
     val adSessionAvgRoundSeconds = IntValue(1, 60, 1)
 
-    // ---------------------------------------------------------------- 信息胶囊：护甲 · 点击速度
-
-    @ModuleValue("护甲显示", "在信息胶囊区域单独一块显示头盔到靴子的耐久")
-    val armorDisplay = BooleanValue(false)
-
-    @ModuleValue("显示部位名", "关闭后只显示耐久数值，更紧凑")
-    val armorShowSlots = BooleanValue(true)
-
-    @ModuleValue("显示空槽", "没有护甲的槽位用 – 占位")
-    val armorShowEmpty = BooleanValue(false)
-
-    @ModuleValue("耐久显示方式", "百分比 / 剩余-最大")
-    val armorPercent = IntValue(0, 1, 0)
-
-    @ModuleValue("只显示受损护甲", "满耐久的护甲不显示")
-    val armorOnlyDamaged = BooleanValue(false)
-
-    @ModuleValue("低耐久阈值", "低于该百分比时高亮，0 ~ 100")
-    val armorLowThreshold = IntValue(0, 100, 20)
-
-    @ModuleValue("低耐久高亮", "低于阈值时用告警色显示")
-    val armorLowWarn = BooleanValue(true)
+    // ---------------------------------------------------------------- 信息胶囊：点击速度
 
     @ModuleValue("点击速度", "在信息胶囊区域单独一块显示 CPS")
     val cpsDisplay = BooleanValue(false)
@@ -349,6 +301,86 @@ class FpsToolsModule : Module() {
 
     @ModuleValue("只在游戏内统计", "打开界面时的点击不计入")
     val cpsInGameOnly = BooleanValue(true)
+
+    // ---------------------------------------------------------------- 第五批：PVP 增强
+
+    @ModuleValue("连击计数", "连续命中时统计连击数与持续时间")
+    val comboCounter = BooleanValue(false)
+
+    @ModuleValue("连击窗口", "毫秒，超过该时间未命中则断连，500 ~ 5000")
+    val comboTimeout = IntValue(500, 5000, 2000)
+
+    @ModuleValue("最少显示连击", "低于该次数不显示，1 ~ 10")
+    val comboMinHits = IntValue(1, 10, 2)
+
+    @ModuleValue("连击显示位置", "左上 / 中上 / 右下")
+    val comboPos = IntValue(0, 2, 0)
+
+    @ModuleValue("连击文字大小", "0.5 ~ 2.0 倍")
+    val comboScale = FloatValue(0.5f, 2f, 1f, 1)
+
+    @ModuleValue("受击清零连击", "被攻击时连击归零")
+    val comboResetOnHurt = BooleanValue(true)
+
+    @ModuleValue("击退方向提示", "屏幕边缘箭头显示被击退的方向")
+    val knockbackArrow = BooleanValue(false)
+
+    @ModuleValue("击退提示时长", "毫秒，300 ~ 2000")
+    val kbDuration = IntValue(300, 2000, 900)
+
+    @ModuleValue("击退箭头大小", "像素，12 ~ 48")
+    val kbSize = IntValue(12, 48, 24)
+
+    @ModuleValue("击退箭头颜色", "白 / 粉 / 蓝 / 金 / 绿 / 红 / 黑 / 浅灰")
+    val kbColor = IntValue(0, 7, 5)
+
+    @ModuleValue("防盲", "致盲 / 强光下自动提升亮度并削弱致盲雾")
+    val blindGuard = BooleanValue(false)
+
+    @ModuleValue("亮度下限", "致盲时 gamma 至少为该值，0.0 ~ 1.0")
+    val blindGamma = FloatValue(0f, 1f, 1f, 2)
+
+    @ModuleValue("强光保持", "毫秒，200 ~ 3000")
+    val blindFlashMs = IntValue(200, 3000, 1200)
+
+    @ModuleValue("队友敌人标记", "不同颜色标记玩家位置，支持远距离穿墙可见")
+    val entityMarkers = BooleanValue(false)
+
+    @ModuleValue("队友颜色", "白 / 粉 / 蓝 / 金 / 绿 / 红 / 黑 / 浅灰")
+    val markTeammateColor = IntValue(0, 7, 4)
+
+    @ModuleValue("敌人颜色", "白 / 粉 / 蓝 / 金 / 绿 / 红 / 黑 / 浅灰")
+    val markEnemyColor = IntValue(0, 7, 5)
+
+    @ModuleValue("标记最大距离", "格，8 ~ 256")
+    val markDistance = IntValue(8, 256, 128)
+
+    @ModuleValue("标记显示距离", "在标记下方显示与目标的距离")
+    val markShowDistance = BooleanValue(true)
+
+    @ModuleValue("标记大小", "像素，6 ~ 24")
+    val markSize = IntValue(6, 24, 10)
+
+    @ModuleValue("放置辅助", "预览方块放置位置与碰撞检测结果")
+    val placementPreview = BooleanValue(false)
+
+    @ModuleValue("预览填充透明度", "百分比，0 ~ 100")
+    val placeAlpha = IntValue(0, 100, 35)
+
+    @ModuleValue("低血量警报", "血量低于阈值时屏幕四周红色脉动边框")
+    val healthAlert = BooleanValue(false)
+
+    @ModuleValue("警报阈值", "血量点，1 ~ 20")
+    val healthThreshold = FloatValue(1f, 20f, 6f, 1)
+
+    @ModuleValue("警报边框粗细", "像素，4 ~ 40")
+    val healthBorder = IntValue(4, 40, 12)
+
+    @ModuleValue("警报脉动速度", "0.5 ~ 4.0")
+    val healthPulse = FloatValue(0.5f, 4f, 1.5f, 1)
+
+    @ModuleValue("警报颜色", "白 / 粉 / 蓝 / 金 / 绿 / 红 / 黑 / 浅灰")
+    val healthColor = IntValue(0, 7, 5)
 
     // ---------------------------------------------------------------- 第一人称动画
 
@@ -422,6 +454,21 @@ class FpsToolsModule : Module() {
 
     @ModuleValue("剔除包含玩家", "遮挡剔除时把玩家也纳入")
     val perfCullPlayers = BooleanValue(false)
+
+    @ModuleValue("实体视野锥剔除", "只提交视野角内的活体，背后的实体直接跳过（默认关）")
+    val perfEntityFov = BooleanValue(false)
+
+    @ModuleValue("视野锥角度", "60 ~ 170 度；越小剔除越多")
+    val perfEntityFovAngle = IntValue(60, 170, 110)
+
+    @ModuleValue("远处名牌剔除", "超过可见距离不再绘制名字 / 血条（默认关）")
+    val perfNametagCulling = BooleanValue(false)
+
+    @ModuleValue("名牌可见距离", "16 ~ 128 格")
+    val perfNametagDistance = IntValue(16, 128, 64)
+
+    @ModuleValue("关闭云层渲染", "不再绘制云层；天空 / 日月不受影响（默认关）")
+    val perfHideClouds = BooleanValue(false)
 
     @ModuleValue("缓存护甲纹理", "护甲渲染复用纹理路径")
     val perfCacheArmorTex = BooleanValue(true)

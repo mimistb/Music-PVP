@@ -10,6 +10,7 @@ import me.sorihiko.dango.lyrics.LyricLine
 import me.sorihiko.dango.lyrics.LyricSplit
 import me.sorihiko.dango.lyrics.Lyrics
 import me.sorihiko.dango.lyrics.LyricsProvider
+import me.sorihiko.dango.lyrics.LyricTuning
 import me.sorihiko.dango.lyrics.TextFlash
 import me.sorihiko.dango.module.Category
 import me.sorihiko.dango.module.Module
@@ -169,11 +170,26 @@ class LyricsModule : Module() {
     @ModuleValue("分行", "把写在一行的两句拆开分别显示（网易云常见）")
     private val splitLines = BooleanValue(true)
 
+    @ModuleValue("歌词偏移", "所有歌曲统一的偏移（毫秒，负数表示歌词提前）")
+    private val globalOffset = IntValue(-10000, 10000, 0)
+
+    @ModuleValue("本曲偏移", "只对当前这首歌生效的偏移，按歌曲自动记住")
+    private val trackOffset = IntValue(-10000, 10000, 0)
+
+    @ModuleValue("重新匹配歌词", "打开此开关会清空当前歌曲的歌词缓存并重新搜索")
+    private val rematch = BooleanValue(false)
+
+    @ModuleValue("从剪贴板粘贴歌词", "读取系统剪贴板里的 LRC 歌词并应用到当前歌曲")
+    private val pasteFromClipboard = BooleanValue(false)
+
+    @ModuleValue("清除手动歌词", "删除当前歌曲手动粘贴的歌词，恢复自动匹配")
+    private val clearPasted = BooleanValue(false)
+
     // ---------------------------------------------------------------- 状态
 
     /** 正在播放的歌（来自内置播放器） */
     private class NowPlaying(val track: NeteaseTrack, val playing: Boolean) {
-        val key: String get() = "netease:${track.id}"
+        val key: String get() = "${track.provider}:${track.id}"
         val title: String get() = track.name
         val artist: String get() = track.artists.joinToString(" / ")
     }
@@ -183,7 +199,28 @@ class LyricsModule : Module() {
 
     private object NotFound
     private val cache = ConcurrentHashMap<String, Any>()     // key -> Lyrics 或 NotFound
+
+    /** 歌词缓存上限：一首 LRC 有几 KB，长时间挂机听歌不能无限累积 */
+    private val cacheMax = 64
+
+    /** 写缓存并做容量控制：超出上限时淘汰最旧的一批，当前歌曲永远保留 */
+    private fun remember(key: String, value: Any) {
+        cache[key] = value
+        var over = cache.size - cacheMax
+        if (over <= 0) return
+        val keep = currentKey
+        val it = cache.keys.iterator()
+        while (it.hasNext() && over > 0) {
+            val k = it.next()
+            if (k == key || k == keep) continue
+            it.remove()
+            over--
+        }
+    }
     private val pending = ConcurrentHashMap.newKeySet<String>()
+    /** 取词失败次数 / 下次允许重试的时间（失败不再永久记 NotFound） */
+    private val attempts = ConcurrentHashMap<String, Int>()
+    private val retryAt = ConcurrentHashMap<String, Long>()
     private val view = LyricView()
 
     private var current: NowPlaying? = null
@@ -191,6 +228,10 @@ class LyricsModule : Module() {
     private var songPos = 0.0                 // 毫秒，本地平滑时钟
     private var lastSeenNanos = 0L
     private var lastIndex = -1
+
+    /** 本曲偏移当前对应的歌曲 key 和已经落地的值 */
+    private var trackOffsetKey: String? = null
+    private var appliedTrackOffset = 0
 
     private val random = Random()
 
@@ -235,6 +276,11 @@ class LyricsModule : Module() {
 
     override fun init() {
         instance = this
+        try {
+            LyricTuning.load(DangoMusic.instance.clientDir)
+        } catch (_: Exception) {
+            // 目录还没准备好时静默跳过，偏移退化为 0
+        }
     }
 
     override fun onDisable() {
@@ -259,22 +305,63 @@ class LyricsModule : Module() {
 
     private fun requestLyrics(s: NowPlaying) {
         val key = s.key
-        if (cache.containsKey(key) || !pending.add(key)) return
+        if (cache.containsKey(key)) return
+        // 玩家手动粘贴过歌词：直接用它，不再走网络
+        LyricTuning.customFor(key)?.let { lrc ->
+            val lines = LyricsProvider.parseNeteaseLrc(lrc)
+            if (lines.isNotEmpty()) {
+                remember(key, Lyrics(lines, "粘贴"))
+                return
+            }
+        }
+        // 上次失败后等一会儿再试，避免每帧都发起网络请求
+        if ((retryAt[key] ?: 0L) > System.currentTimeMillis()) return
+        if (!pending.add(key)) return
         val track = s.track
         fetcher.execute {
             try {
-                // 本地曲目的 id 是负数，不能拿去请求网易云
-                val resolved = if (LocalLibrary.isLocal(track.id)) {
-                    autoLyrics()?.resolve(track)
-                } else {
-                    LyricsProvider.neteaseLyricById(track.id) ?: autoLyrics()?.resolve(track)
+                // 本地曲目的 id 是负数，不能拿去请求网易云；
+                // 网易云曲目用 ID 取，QQ / 酷狗没有网易云 ID，只能用歌名 + 歌手检索
+                val resolved = when {
+                    LocalLibrary.isLocal(track.id) -> autoLyrics()?.resolve(track)
+                    track.provider == "netease" ->
+                        LyricsProvider.neteaseLyricById(track.id)
+                            ?: LyricsProvider.searchNeteaseLyric(track.name, track.artists)
+                            ?: autoLyrics()?.resolve(track)
+                    else ->
+                        LyricsProvider.searchNeteaseLyric(track.name, track.artists)
+                            ?: autoLyrics()?.resolve(track)
                 }
-                cache[key] = resolved ?: NotFound
+                if (resolved != null) {
+                    remember(key, resolved)
+                    attempts.remove(key)
+                    retryAt.remove(key)
+                } else {
+                    failed(key)
+                }
             } catch (_: Exception) {
-                cache[key] = NotFound
+                failed(key)
             } finally {
                 pending.remove(key)
             }
+        }
+    }
+
+    /** 失败的歌：最多试 3 次，期间只做冷却，不写死 NotFound */
+    private fun failed(key: String) {
+        val n = (attempts[key] ?: 0) + 1
+        attempts[key] = n
+        // 失败记录也是按歌累积的：换过几百首都没词时清一次，避免无限增长
+        if (attempts.size > 128) {
+            attempts.clear()
+            retryAt.clear()
+        }
+        if (n >= 3) {
+            remember(key, NotFound)
+            attempts.remove(key)
+            retryAt.remove(key)
+        } else {
+            retryAt[key] = System.currentTimeMillis() + 20_000L
         }
     }
 
@@ -288,8 +375,73 @@ class LyricsModule : Module() {
     /** 自动识别歌词打开后，让之前没取到歌词的歌重新识别一次 */
     fun clearMissingLyrics() {
         cache.entries.removeIf { it.value === NotFound }
+        attempts.clear()
+        retryAt.clear()
         // 正在放的这首如果还是没歌词，立刻重新取一次（换歌时本来就会取）
         current?.let { s -> if (cache[s.key] == null) requestLyrics(s) }
+    }
+
+    /** 清掉当前歌曲的歌词缓存并重新搜索匹配（保留玩家手动粘贴的歌词） */
+    fun rematchCurrent() {
+        val s = current ?: nowPlaying() ?: return
+        cache.remove(s.key)
+        attempts.remove(s.key)
+        retryAt.remove(s.key)
+        lastIndex = -1
+        requestLyrics(s)
+    }
+
+    /** 取这首歌的总偏移：全局偏移 + 本曲偏移 */
+    private fun totalOffset(key: String?): Long {
+        if (key == null) return globalOffset.value.toLong()
+        return globalOffset.value.toLong() + trackOffsetFor(key)
+    }
+
+    /** 切歌时把存下来的本曲偏移读进设置项；玩家改设置项时再写回文件 */
+    private fun trackOffsetFor(key: String): Int {
+        if (key != trackOffsetKey) {
+            trackOffsetKey = key
+            appliedTrackOffset = LyricTuning.offsetFor(key)
+            trackOffset.setValue(appliedTrackOffset)
+        }
+        return appliedTrackOffset
+    }
+
+    private fun syncTrackOffset(key: String?) {
+        if (key == null) return
+        if (key != trackOffsetKey) {
+            trackOffsetFor(key)
+            return
+        }
+        if (trackOffset.value != appliedTrackOffset) {
+            appliedTrackOffset = trackOffset.value
+            LyricTuning.setOffset(key, appliedTrackOffset)
+        }
+    }
+
+    /** 读取系统剪贴板里的 LRC 歌词，应用到当前歌曲 */
+    private fun pasteLyricsFromClipboard(s: NowPlaying) {
+        val text = try {
+            DangoClient.platform.clipboard
+        } catch (_: Exception) {
+            ""
+        }
+        if (text.isBlank()) return
+        val lines = LyricsProvider.parseNeteaseLrc(text)
+        if (lines.isEmpty()) return
+        LyricTuning.setCustom(s.key, text)
+        remember(s.key, Lyrics(lines, "粘贴"))
+        lastIndex = -1
+    }
+
+    /** 删除当前歌曲手动粘贴的歌词，恢复自动匹配 */
+    private fun clearPastedLyrics(s: NowPlaying) {
+        LyricTuning.setCustom(s.key, null)
+        cache.remove(s.key)
+        attempts.remove(s.key)
+        retryAt.remove(s.key)
+        lastIndex = -1
+        requestLyrics(s)
     }
 
     /** 灵动岛用的当前这句歌词：没有歌词 / 空白行返回 null（模块关着也能取，只是不画 3D） */
@@ -312,15 +464,17 @@ class LyricsModule : Module() {
         if (noLyrics.get()) return v
         val s = nowPlaying() ?: return v
         requestLyrics(s)
-        v.posMs = MusicPlayer.positionMs
         val key = s.key
+        // BUG-03: posMs 是 2D / 灵动岛逐字染色用的歌曲内时钟，不能混入歌词偏移；
+        // 偏移只影响"取哪一句"，否则整句染色会随偏移整体平移。
+        v.posMs = MusicPlayer.positionMs
         val lyrics = lyricsFor(key)
         if (lyrics == null) {
             // 已经判定没有歌词（本地 / 在线都没找到）：给 2D 歌词一个歌名兜底（灵动岛不再显示歌名）
             if (cache[key] === NotFound) v.fallback = s.title
             return v
         }
-        val idx = lyrics.indexAt(v.posMs)
+        val idx = lyrics.indexAt(v.posMs + totalOffset(key))
         val ln = lyrics.lines.getOrNull(idx)
         v.line = ln
         v.current = ln?.text?.takeIf { it.isNotBlank() }
@@ -343,6 +497,9 @@ class LyricsModule : Module() {
     private var prevIslandLyrics = false
     private var prevTwoD = false
 
+    /** 首帧还没建立快照：此时 prev* 是构造默认值，不能当成"用户刚切换" */
+    private var prevSynced = false
+
     /**
      * 三路互斥：3D 歌词 / 灵动岛歌词 / 2D 歌词 同一时间只开一个。
      * 只看"这一帧哪个刚变成了开"，打开的那个把另外两个关掉；
@@ -354,6 +511,24 @@ class LyricsModule : Module() {
         val worldOn = worldMode.get() && enabled
         val islandOn = island?.lyricsEnabled == true
         val twoOn = two?.lyricsEnabled == true
+
+        // BUG-02: prevTwoD 初值是 false，而 2D 歌词默认是开的。首帧若按"用户刚打开 2D"
+        // 处理，会把配置里已开的 3D 歌词静默关掉（违反 3D 优先）。首帧只做一次收敛：
+        // 同时开着多个时按 3D → 灵动岛 → 2D 的优先级处理，不产生副作用。
+        if (!prevSynced) {
+            prevSynced = true
+            if (worldOn) {
+                if (islandOn) island?.setIslandLyrics(false)
+                if (twoOn) two?.setLyrics(false)
+            } else if (islandOn && twoOn) {
+                two?.setLyrics(false)
+            }
+            prevWorldMode = worldMode.get() && enabled
+            prevIslandLyrics = island?.lyricsEnabled == true
+            prevTwoD = two?.lyricsEnabled == true
+            return
+        }
+
         val worldChanged = worldOn != prevWorldMode
         val islandChanged = islandOn != prevIslandLyrics
         val twoChanged = twoOn != prevTwoD
@@ -420,23 +595,39 @@ class LyricsModule : Module() {
     @EventHandler
     fun render(e: WorldRenderEndEvent) {
         syncLyricModes()
+        // BUG-04: 分行开关要在模块关闭时也同步，否则关着模块调整设置永远不生效
+        if (LyricSplit.enabled != splitLines.get()) {
+            LyricSplit.enabled = splitLines.get()
+            lastIndex = -1
+        }
         if (!enabled) return
         updateClock()
         val s = current
+        // 歌词微调：切歌时读回本曲偏移、玩家改了偏移就存盘；其余是一次性动作
+        if (s != null) {
+            syncTrackOffset(s.key)
+            if (rematch.get()) {
+                rematch.set(false)
+                rematchCurrent()
+            }
+            if (pasteFromClipboard.get()) {
+                pasteFromClipboard.set(false)
+                pasteLyricsFromClipboard(s)
+            }
+            if (clearPasted.get()) {
+                clearPasted.set(false)
+                clearPastedLyrics(s)
+            }
+        }
         // 小柱子的颜色取自封面，所以只开 Now playing 也要加载封面
         if (s != null && (showCover.get() || nowPlaying.get())) {
             s.track.coverUrl.takeIf { it.isNotEmpty() }?.let { cover.requestUrl(s.key, it) }
         }
         cover.upload()
-        // 拆句开关变了：歌词行的下标都变了，重新找当前这句
-        if (LyricSplit.enabled != splitLines.get()) {
-            LyricSplit.enabled = splitLines.get()
-            lastIndex = -1
-        }
         val lyrics = currentKey?.let { lyricsFor(it) }
         val paused = s != null && !s.playing
         if (s != null && lyrics != null) {
-            val pos = songPos.toLong()
+            val pos = songPos.toLong() + totalOffset(currentKey)
             val idx = lyrics.indexAt(pos)
             if (paused) {
                 // 暂停：当前这句淡出消失，恢复播放时再出现
@@ -465,7 +656,7 @@ class LyricsModule : Module() {
         val gfx = DangoClient.gfx
         val deepGlow = gfx.glow
         gfx.guarded {
-            val songNow = songPos.toLong()
+            val songNow = songPos.toLong() + totalOffset(currentKey)
             val beat = if (s != null) MusicPlayer.beatPulse(MusicPlayer.positionMs) else 0f
             if (!worldMode.get() || noLyrics.get()) {
                 // 3D 歌词关掉 / 总开关关掉 = 不显示歌词
@@ -881,7 +1072,16 @@ class LyricsModule : Module() {
     private fun drawWorld(partialTicks: Float, songNow: Long, lyrics: Lyrics?, beat: Float) {
         val world = DangoClient.gfx.world
         world.begin()
+        try {
+            drawWorldLines(world, songNow)
+        } finally {
+            // 世界文字之后同帧就是原版 renderHand，必须把 depth / 光照 / lightmap 还原，
+            // 否则第一人称手部会被画成无遮挡、无光照的黑色剪影
+            world.end()
+        }
+    }
 
+    private fun drawWorldLines(world: me.sorihiko.dango.gfx.WorldView, songNow: Long) {
         fun draw(f: Floating, alphaMul: Float, lift: Float) {
             var rx = f.x - world.cameraX
             var ry = f.y - world.cameraY

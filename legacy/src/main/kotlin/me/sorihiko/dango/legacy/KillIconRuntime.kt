@@ -132,6 +132,12 @@ object KillIconRuntime {
      */
     fun renderPreview(x: Int, y: Int, width: Int, height: Int, preset: Int): Boolean {
         if (width <= 0 || height <= 0) return false
+        // 先暂存再进 try：渲染抛异常时也要在 finally 里还原，避免预览锚点/尺寸残留到正常 HUD
+        val oldX = effect.anchorXPercent
+        val oldY = effect.anchorYPercent
+        val oldSize = effect.size
+        val oldDemo = effect.demoMode
+        val oldEnabled = effect.enabled
         return try {
             val sr = ScaledResolution(mc)
             val gw = sr.scaledWidth
@@ -143,11 +149,6 @@ object KillIconRuntime {
             val sw = width.toFloat() / dw * gw
             val sh = height.toFloat() / dh * gh
 
-            val oldX = effect.anchorXPercent
-            val oldY = effect.anchorYPercent
-            val oldSize = effect.size
-            val oldDemo = effect.demoMode
-            val oldEnabled = effect.enabled
             previewAt = System.currentTimeMillis()
             // 换预设或上一轮动画播完（约 5 秒）就重新触发一次，让预览持续有内容
             effect.enabled = true
@@ -182,15 +183,16 @@ object KillIconRuntime {
                 GlStateManager.matrixMode(GL11.GL_MODELVIEW)
                 GlStateManager.popMatrix()
             }
+            true
+        } catch (t: Throwable) {
+            DangoLogger.error("Dango Music kill icon preview failed: {}", t)
+            false
+        } finally {
             effect.anchorXPercent = oldX
             effect.anchorYPercent = oldY
             effect.size = oldSize
             effect.demoMode = oldDemo
             effect.enabled = oldEnabled
-            true
-        } catch (t: Throwable) {
-            DangoLogger.error("Dango Music kill icon preview failed: {}", t)
-            false
         }
     }
 
@@ -199,17 +201,31 @@ object KillIconRuntime {
     private var dragOffsetX = 0f
     private var dragOffsetY = 0f
 
+    /** 模块实例注册后不会变：缓存起来，避免每帧都走 moduleManager 查找 */
+    private var cachedModule: KillIconHudModule? = null
+
+    private fun killIconModule(): KillIconHudModule? {
+        cachedModule?.let { return it }
+        return try {
+            DangoMusic.instance.moduleManager.get(KillIconHudModule::class.java).also { cachedModule = it }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
     private fun handleDrag(width: Int, height: Int) {
         if (mc.currentScreen !is GuiChat) {
             draggingIcon = false
             return
         }
-        val module = try {
-            DangoMusic.instance.moduleManager.get(KillIconHudModule::class.java)
-        } catch (t: Throwable) {
+        val module = killIconModule() ?: run {
+            draggingIcon = false
             return
         }
-        if (!module.enabled) return
+        if (!module.enabled) {
+            draggingIcon = false
+            return
+        }
         val dw = mc.displayWidth.toFloat().coerceAtLeast(1f)
         val dh = mc.displayHeight.toFloat().coerceAtLeast(1f)
         val mx = Mouse.getX().toFloat() / dw * width
@@ -246,11 +262,7 @@ object KillIconRuntime {
     // ---------------------------------------------------------------- 内部
 
     private fun sync() {
-        val module = try {
-            DangoMusic.instance.moduleManager.get(KillIconHudModule::class.java)
-        } catch (t: Throwable) {
-            return
-        }
+        val module = killIconModule() ?: return
         effect.enabled = module.enabled
         effect.playSound = module.playSound.get() && System.currentTimeMillis() - previewAt > 1500L
         effect.soundVolume = module.soundVolume.value

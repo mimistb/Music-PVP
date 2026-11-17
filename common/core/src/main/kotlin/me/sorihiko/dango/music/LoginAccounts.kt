@@ -5,6 +5,7 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import me.sorihiko.dango.DangoLogger
 import me.sorihiko.dango.DangoMusic
+import me.sorihiko.dango.security.CredCrypto
 
 import java.io.File
 import java.nio.charset.StandardCharsets
@@ -92,7 +93,11 @@ object LoginAccounts {
         }
         return try {
             val text = String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8)
-            JsonParser().parse(text).asJsonObject
+            val obj = JsonParser().parse(text).asJsonObject
+            // 老版本写的是明文：读到就解密（明文原样返回），下次保存自动转密文
+            val migrated = transformSensitive(obj, encrypting = false)
+            if (migrated) persist(obj)
+            obj
         } catch (e: Exception) {
             DangoLogger.warn("Login config parse failed, using defaults. {}", e.javaClass.simpleName)
             JsonObject()
@@ -102,8 +107,8 @@ object LoginAccounts {
     private fun template(): JsonObject = JsonObject().apply {
         addProperty(
             "_readme",
-            "QQ 音乐：在 developer.y.qq.com 申请开放平台应用后填写 appId / appKey（appKey 属于敏感信息，只放在本机）；" +
-                "酷狗音乐：kugou.baseUrl 指向 Kungo-API 服务地址。登录成功后令牌会自动写入 accounts。",
+            "QQ 音乐：可直接搜索 / 播放免费歌曲，无需登录；如需会员音质，可在 developer.y.qq.com 申请开放平台应用后填写 appId / appKey（appKey 属于敏感信息，只放在本机）；" +
+                "酷狗音乐：扫码登录与播放均已内置，kugou.baseUrl 仅为兼容旧配置保留，可留空。",
         )
         add("qq", JsonObject().apply {
             addProperty("appId", "")
@@ -113,7 +118,7 @@ object LoginAccounts {
             addProperty("endpoint", DEFAULT_QQ_ENDPOINT)
         })
         add("kugou", JsonObject().apply {
-            addProperty("baseUrl", DEFAULT_KUGOU_URL)
+            addProperty("baseUrl", "")
         })
         add("accounts", JsonObject())
     }
@@ -122,12 +127,50 @@ object LoginAccounts {
         try {
             val f = file()
             f.parentFile?.mkdirs()
+            // 落盘前把所有凭据字段换成密文；内存里始终是明文，读写逻辑不用关心加解密
+            val onDisk = JsonParser().parse(obj.toString()).asJsonObject
+            transformSensitive(onDisk, encrypting = true)
             val tmp = File(f.parentFile, f.name + ".tmp")
-            tmp.writeText(gson.toJson(obj), StandardCharsets.UTF_8)
+            tmp.writeText(gson.toJson(onDisk), StandardCharsets.UTF_8)
             Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING)
         } catch (e: Exception) {
             DangoLogger.warn("Login config save failed. {}", e.javaClass.simpleName)
         }
+    }
+
+    /** 需要加密的字段：QQ 开放平台 appKey + 各平台令牌 / 设备标识 / 账号 ID */
+    private val sensitiveFields = arrayOf("accessToken", "refreshToken", "token", "dfid", "userId", "openId")
+
+    /**
+     * 就地加 / 解密敏感字段。
+     * @return 是否发生了明文 → 密文的转换（用于把老配置文件一次性迁移）
+     */
+    private fun transformSensitive(obj: JsonObject, encrypting: Boolean): Boolean {
+        var migrated = false
+        fun apply(holder: JsonObject, name: String) {
+            val el = holder.get(name) ?: return
+            if (!el.isJsonPrimitive || !el.asJsonPrimitive.isString) return
+            val value = el.asString
+            if (value.isEmpty()) return
+            if (encrypting) {
+                if (CredCrypto.isEncrypted(value)) return
+                holder.addProperty(name, CredCrypto.encrypt(value))
+            } else {
+                if (!CredCrypto.isEncrypted(value)) {
+                    migrated = true
+                    return
+                }
+                holder.addProperty(name, CredCrypto.decrypt(value))
+            }
+        }
+        (obj.get("qq") as? JsonObject)?.let { apply(it, "appKey") }
+        (obj.get("accounts") as? JsonObject)?.let { accounts ->
+            for ((_, value) in accounts.entrySet()) {
+                val acc = value as? JsonObject ?: continue
+                for (name in sensitiveFields) apply(acc, name)
+            }
+        }
+        return migrated
     }
 
     private fun save() = synchronized(lock) {
@@ -188,6 +231,10 @@ object LoginAccounts {
     fun qqAccount(): LoginAccount? = account("qq")
 
     fun kugouAccount(): LoginAccount? = account("kugou")
+
+    /** 酷狗播放接口需要的设备标识；未登录 / 未保存时为空 */
+    fun kugouDfid(): String =
+        (section("accounts").get("kugou") as? JsonObject)?.strOr("dfid") ?: ""
 
     /** 除网易云外，当前已登录的平台账号（侧栏显示用） */
     fun firstLoggedIn(): LoginAccount? = qqAccount() ?: kugouAccount()

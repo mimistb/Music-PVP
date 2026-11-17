@@ -40,6 +40,16 @@ object BedWarsData {
     @Volatile
     var tabNames: Array<String> = emptyArray()
 
+    // ---------------------------------------------------------------- 游戏模式（名牌统计）
+
+    const val GAME_UNKNOWN = 0
+    const val GAME_BEDWARS = 1
+    const val GAME_SKYWARS = 2
+
+    /** 当前所处的 Hypixel 游戏（平台层按计分板标题每 tick 写入）。 */
+    @Volatile
+    var gameMode = GAME_UNKNOWN
+
     // ---------------------------------------------------------------- 威胁快照（每 tick 覆盖）
 
     @Volatile
@@ -113,6 +123,24 @@ object BedWarsData {
     @Volatile
     var hypNetLevel = true
 
+    // ---------------------------------------------------------------- 名牌统计设置镜像（NametagStatsModule 每 tick 写入）
+
+    @Volatile
+    var ntShowSelf = false
+
+    /** 名牌上方的垂直偏移（单位 0.01 格）。 */
+    @Volatile
+    var ntHeightOffset = 0
+
+    @Volatile
+    var ntShowBedwars = true
+
+    @Volatile
+    var ntShowSkywars = true
+
+    @Volatile
+    var ntShowNetLevel = true
+
     /** 待执行的手动查询（设置页回车时写入，平台层取走后置空）。 */
     @Volatile
     var queryRequest: String? = null
@@ -136,14 +164,14 @@ object BedWarsData {
     private val statsByName = ConcurrentHashMap<String, BedWarsStats>()
 
     /** 每次写入自增，TAB 统计列表据此判断要不要重建显示字符串。 */
-    @Volatile
-    var statsVersion = 0
-        private set
+    private val statsVersionCounter = java.util.concurrent.atomic.AtomicInteger(0)
+
+    val statsVersion: Int get() = statsVersionCounter.get()
 
     fun putStats(name: String?, stats: BedWarsStats?) {
         if (name.isNullOrBlank() || stats == null) return
         statsByName[name.trim().lowercase(Locale.ROOT)] = stats
-        statsVersion++
+        statsVersionCounter.incrementAndGet()
     }
 
     fun statsFor(name: String?): BedWarsStats? {
@@ -153,12 +181,13 @@ object BedWarsData {
 
     fun clearStats() {
         statsByName.clear()
-        statsVersion++
+        statsVersionCounter.incrementAndGet()
     }
 
     /** 世界切换：清比赛态、床、威胁与行文本；统计缓存跨局保留（6 小时缓存策略由管线自己负责）。 */
     fun clearMatch() {
         matchActive = false
+        gameMode = GAME_UNKNOWN
         ownTeam = -1
         ownBedKnown = false
         ownBedBroken = false

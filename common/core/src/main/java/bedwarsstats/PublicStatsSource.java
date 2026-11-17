@@ -377,6 +377,7 @@ public final class PublicStatsSource {
         if (bedWars.entrySet().isEmpty() && !nested) {
             bedWars = pickObject(HypixelJson.objectField(root, "stats"), "Bedwars", "BedWars");
         }
+        final JsonObject skyWars = pickObject(stats, "SkyWars", "Skywars", "skywars", "SKYWARS");
 
         JsonObject achievements = HypixelJson.objectField(player, "achievements");
         if (achievements.entrySet().isEmpty()) {
@@ -409,6 +410,10 @@ public final class PublicStatsSource {
             if (experience > 0) networkLevel = HypixelJson.networkLevel(experience);
         }
 
+        double skyWarsExperience = HypixelJson.doubleField(skyWars, "skywars_experience", 0.0);
+        if (skyWarsExperience <= 0) skyWarsExperience = HypixelJson.doubleField(skyWars, "experience", 0.0);
+        final int skyWarsStars = skyWarsExperience > 0 ? SkyWarsStars.fromExperience(skyWarsExperience) : 0;
+
         final String resolvedUuid = HypixelJson.normalizeUuid(uuid);
         final BedWarsStats parsed = new BedWarsStats(
                 resolvedUuid.isEmpty() ? uuid : resolvedUuid,
@@ -419,6 +424,7 @@ public final class PublicStatsSource {
                 clamp(stars, 0, 100000),
                 clamp(winStreak, 0, 1_000_000),
                 clamp(networkLevel, 0, 100000),
+                clamp(skyWarsStars, 0, 100000),
                 nowMillis > 0 ? nowMillis : System.currentTimeMillis());
         return new Parse(parsed, null);
     }

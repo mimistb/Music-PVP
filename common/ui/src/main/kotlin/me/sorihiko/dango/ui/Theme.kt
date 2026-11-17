@@ -12,6 +12,20 @@ object Theme {
     const val MENU_WIDTH = 880f
     const val MENU_HEIGHT = 560f
 
+    // ---- HUD：拖动吸附与安全区（逻辑像素，播放器与 HUD 共用同一套刻度） ----
+    /** 拖动吸附的基准网格 */
+    const val HUD_GRID = 8f
+    /** 拖动时与屏幕边缘保留的最小边距 */
+    const val HUD_SAFE = 8f
+
+    // ---- 页面标题区（所有页面共用同一套标题节奏） ----
+    /** 页面主标题字号 */
+    const val PAGE_TITLE_SIZE = 22f
+    /** 副标题相对主标题顶部的偏移 */
+    const val PAGE_SUB_Y = 30f
+    /** 标题块整体高度：内容区统一从这条线开始 */
+    const val PAGE_HEADER_H = 54f
+
     // ---- 字体 ----
     const val FONT_REGULAR = "Inter-Regular-cut.ttf"
     const val FONT_MEDIUM = "Inter-Medium-cut.ttf"
@@ -74,8 +88,8 @@ object Theme {
     // ---- 玻璃材质：越靠前的层越亮 ----
     val GLASS_WINDOW = GlassStyle(
         radius = 30f,
-        tint = Color(0.10f, 0.10f, 0.13f, 0.18f),
-        maxLuma = 0.30f,
+        tint = Color(1f, 1f, 1f, 0.07f),
+        maxLuma = 0.56f,
         saturation = 1.45f,
         frost = 0.85f,
         refraction = 22f,
@@ -83,12 +97,13 @@ object Theme {
         dispersion = 0.30f,
         highlight = 1f,
         shadow = ShadowStyle(Color(0f, 0f, 0f, 0.30f), 36f, Vec2(0f, -10f)),
+        fallback = Color(0.40f, 0.42f, 0.46f, 0.82f),
     )
 
     val GLASS_SIDEBAR = GlassStyle(
         radius = 22f,
-        tint = Color(1f, 1f, 1f, 0.05f),
-        maxLuma = 0.36f,
+        tint = Color(1f, 1f, 1f, 0.06f),
+        maxLuma = 0.60f,
         saturation = 1.4f,
         frost = 0.55f,
         refraction = 16f,
@@ -100,8 +115,8 @@ object Theme {
 
     val GLASS_SELECTION = GlassStyle(
         radius = 12f,
-        tint = Color(1f, 1f, 1f, 0.13f),
-        maxLuma = 0.48f,
+        tint = Color(1f, 1f, 1f, 0.08f),
+        maxLuma = 0.66f,
         saturation = 1.5f,
         frost = 0.2f,
         refraction = 10f,
@@ -114,6 +129,12 @@ object Theme {
 
     fun textWidth(text: String, size: Float, fontPath: String): Float =
         DangoClient.gfx.uiTextWidth(text, size, fontPath)
+
+    /**
+     * 以 centerY 为视觉中线时，MixedText 需要的 y 参数。
+     * 所有"图标 / 按钮文字与控件中线对齐"的地方都走这里，避免各处各写一套偏移。
+     */
+    fun textCenterY(centerY: Float, size: Float): Float = centerY - size * 0.39f - 0.5f
 
     /** 以 centerY 为视觉中线绘制文字（按大写字高居中） */
     fun drawText(

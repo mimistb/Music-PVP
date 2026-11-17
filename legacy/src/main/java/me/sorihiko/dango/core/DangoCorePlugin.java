@@ -27,7 +27,16 @@ public final class DangoCorePlugin implements IFMLLoadingPlugin {
                 "me.sorihiko.dango.core.ItemPhysicsTransformer",
                 "me.sorihiko.dango.core.BetterChatTransformer",
                 "me.sorihiko.dango.core.ChatTranslateTransformer",
-                "me.sorihiko.dango.core.FishingRodTransformer"
+                "me.sorihiko.dango.core.FishingRodTransformer",
+                "me.sorihiko.dango.core.SlowSwingTransformer",
+                "me.sorihiko.dango.core.ShinyPotsTransformer",
+                "me.sorihiko.dango.core.ScoreboardTransformer",
+                "me.sorihiko.dango.core.WeatherTransformer",
+                "me.sorihiko.dango.core.CustomHeldItemsTransformer",
+                "me.sorihiko.dango.core.GaleAntiAimTransformer",
+                "me.sorihiko.dango.core.ChatTranslateBarTransformer",
+                "me.sorihiko.dango.core.GameSettingsBrightnessTransformer",
+                "me.sorihiko.dango.core.HudAboveScreenTransformer"
         };
     }
 

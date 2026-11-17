@@ -189,7 +189,9 @@ object LocalLibrary {
         if (flags and 0x40 != 0) {
             if (n < p + 4) return null
             val ext = if (ver >= 4) syncsafe(buf, p) else beInt(buf, p)
-            p += ext
+            // BUG-06: ID3v2.3 的扩展头长度不含这 4 字节尺寸本身（v2.4 才包含），
+            // 少加 4 会让帧起点错位，标题/歌手读成乱码。
+            p += if (ver >= 4) ext else 4 + ext
         }
         val end = min(n, 10 + tagSize)
         var title: String? = null

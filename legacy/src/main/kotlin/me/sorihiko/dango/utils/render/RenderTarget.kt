@@ -27,92 +27,106 @@ class RenderTarget(
         this.width = width
         this.height = height
 
-        fbo = GL30.glGenFramebuffers()
-        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, fbo)
+        // 记录进来时的绑定：调用方可能正渲染到别的 FBO / 绑着别的纹理，
+        // 不能无条件 bind(0)，否则外面那一层渲染会被打断。
+        val previousFbo = GL11.glGetInteger(GL30.GL_FRAMEBUFFER_BINDING)
+        val previousTexture = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D)
+        try {
+            fbo = GL30.glGenFramebuffers()
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, fbo)
 
-        if (color) {
-            framebufferTexture = GL11.glGenTextures()
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, framebufferTexture)
+            if (color) {
+                framebufferTexture = GL11.glGenTextures()
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, framebufferTexture)
 
-            GL11.glTexImage2D(
-                GL11.GL_TEXTURE_2D,
-                0,
-                GL11.GL_RGBA8,
-                width,
-                height,
-                0,
-                GL11.GL_RGBA,
-                GL11.GL_UNSIGNED_BYTE,
-                null as ByteBuffer?
-            )
+                GL11.glTexImage2D(
+                    GL11.GL_TEXTURE_2D,
+                    0,
+                    GL11.GL_RGBA8,
+                    width,
+                    height,
+                    0,
+                    GL11.GL_RGBA,
+                    GL11.GL_UNSIGNED_BYTE,
+                    null as ByteBuffer?
+                )
 
-            GL11.glTexParameteri(
-                GL11.GL_TEXTURE_2D,
-                GL11.GL_TEXTURE_MIN_FILTER,
-                GL11.GL_NEAREST
-            )
-            GL11.glTexParameteri(
-                GL11.GL_TEXTURE_2D,
-                GL11.GL_TEXTURE_MAG_FILTER,
-                GL11.GL_NEAREST
-            )
+                GL11.glTexParameteri(
+                    GL11.GL_TEXTURE_2D,
+                    GL11.GL_TEXTURE_MIN_FILTER,
+                    GL11.GL_NEAREST
+                )
+                GL11.glTexParameteri(
+                    GL11.GL_TEXTURE_2D,
+                    GL11.GL_TEXTURE_MAG_FILTER,
+                    GL11.GL_NEAREST
+                )
 
-            GL30.glFramebufferTexture2D(
-                GL30.GL_FRAMEBUFFER,
-                GL30.GL_COLOR_ATTACHMENT0,
-                GL11.GL_TEXTURE_2D,
-                framebufferTexture,
-                0
-            )
+                GL30.glFramebufferTexture2D(
+                    GL30.GL_FRAMEBUFFER,
+                    GL30.GL_COLOR_ATTACHMENT0,
+                    GL11.GL_TEXTURE_2D,
+                    framebufferTexture,
+                    0
+                )
+            }
+
+            if (depth) {
+                depthTexture = GL11.glGenTextures()
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, depthTexture)
+
+                GL11.glTexImage2D(
+                    GL11.GL_TEXTURE_2D,
+                    0,
+                    GL14.GL_DEPTH_COMPONENT24,
+                    width,
+                    height,
+                    0,
+                    GL11.GL_DEPTH_COMPONENT,
+                    GL11.GL_FLOAT,
+                    null as ByteBuffer?
+                )
+
+                GL11.glTexParameteri(
+                    GL11.GL_TEXTURE_2D,
+                    GL11.GL_TEXTURE_MIN_FILTER,
+                    GL11.GL_NEAREST
+                )
+
+                GL11.glTexParameteri(
+                    GL11.GL_TEXTURE_2D,
+                    GL11.GL_TEXTURE_MAG_FILTER,
+                    GL11.GL_NEAREST
+                )
+
+                GL30.glFramebufferTexture2D(
+                    GL30.GL_FRAMEBUFFER,
+                    GL30.GL_DEPTH_ATTACHMENT,
+                    GL11.GL_TEXTURE_2D,
+                    depthTexture,
+                    0
+                )
+            }
+
+            val status = GL30.glCheckFramebufferStatus(GL30.GL_FRAMEBUFFER)
+            if (status != GL30.GL_FRAMEBUFFER_COMPLETE) {
+                // 先把这次生成的 FBO / 纹理删掉再抛，否则每次重建失败都会泄漏一组 GL 对象
+                cleanupObjects()
+                this.width = 0
+                this.height = 0
+                throw RuntimeException("Framebuffer create failed: $status")
+            }
+        } finally {
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, previousTexture)
+            GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, previousFbo)
         }
-
-        if (depth) {
-            depthTexture = GL11.glGenTextures()
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, depthTexture)
-
-            GL11.glTexImage2D(
-                GL11.GL_TEXTURE_2D,
-                0,
-                GL14.GL_DEPTH_COMPONENT24,
-                width,
-                height,
-                0,
-                GL11.GL_DEPTH_COMPONENT,
-                GL11.GL_FLOAT,
-                null as ByteBuffer?
-            )
-
-            GL11.glTexParameteri(
-                GL11.GL_TEXTURE_2D,
-                GL11.GL_TEXTURE_MIN_FILTER,
-                GL11.GL_NEAREST
-            )
-
-            GL11.glTexParameteri(
-                GL11.GL_TEXTURE_2D,
-                GL11.GL_TEXTURE_MAG_FILTER,
-                GL11.GL_NEAREST
-            )
-
-            GL30.glFramebufferTexture2D(
-                GL30.GL_FRAMEBUFFER,
-                GL30.GL_DEPTH_ATTACHMENT,
-                GL11.GL_TEXTURE_2D,
-                depthTexture,
-                0
-            )
-        }
-
-        val status = GL30.glCheckFramebufferStatus(GL30.GL_FRAMEBUFFER)
-        if (status != GL30.GL_FRAMEBUFFER_COMPLETE) {
-            throw RuntimeException("Framebuffer create failed: $status")
-        }
-
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0)
-        GL30.glBindFramebuffer(GL30.GL_FRAMEBUFFER, 0)
     }
 
     fun delete() {
+        cleanupObjects()
+    }
+
+    private fun cleanupObjects() {
         if (fbo != -1) {
             GL30.glDeleteFramebuffers(fbo)
             fbo = -1

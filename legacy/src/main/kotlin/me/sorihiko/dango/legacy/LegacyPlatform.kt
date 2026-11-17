@@ -63,12 +63,22 @@ object LegacyPlatform : Platform {
             return PlayerPose(p.posX, p.posY + p.getEyeHeight(), p.posZ, p.rotationYaw, p.rotationPitch)
         }
 
+
     override fun openMusicScreen() {
-        mc.displayGuiScreen(LegacyMusicScreen())
+        val floating = try {
+            me.sorihiko.dango.module.impls.music.NeteaseMusicModule.of()?.floatingPanel?.get() ?: true
+        } catch (_: Throwable) {
+            true
+        }
+        if (floating) {
+            FloatingMusicPanel.toggle()
+        } else {
+            mc.displayGuiScreen(LegacyMusicScreen(floating = false))
+        }
     }
 
     /**
-     * 主界面背景图：AWT 原生文件选择框。
+     * 游戏选项背景图：AWT 原生文件选择框。
      * 对话框会阻塞打开它的线程，必须放到独立线程 + AWT 事件线程，否则游戏主循环会停摆；
      * 选完再调度回 Minecraft 主线程回调。
      */

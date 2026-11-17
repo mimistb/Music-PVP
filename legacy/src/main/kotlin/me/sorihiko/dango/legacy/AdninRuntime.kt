@@ -1,10 +1,5 @@
 package me.sorihiko.dango.legacy
 
-import fpsport.adnin.anticheat.Alert
-import fpsport.adnin.anticheat.AnticheatApi
-import fpsport.adnin.anticheat.AnticheatConfig
-import fpsport.adnin.anticheat.AnticheatModule
-import fpsport.adnin.anticheat.PlayerLabel
 import fpsport.adnin.chat.ChatConfig
 import fpsport.adnin.chat.ChatDataModule
 import fpsport.adnin.chat.ChatParser
@@ -16,23 +11,17 @@ import me.sorihiko.dango.DangoLogger
 import me.sorihiko.dango.module.impls.music.FpsToolsModule
 
 import net.minecraft.client.Minecraft
-import net.minecraft.util.ChatComponentText
-
-import java.util.Locale
 
 /**
- * AdOverlay 三模块（反作弊 / 聊天数据 / 会话统计）的宿主运行层。
+ * AdOverlay 两模块（聊天数据 / 会话统计）的宿主运行层。
  *
- * <p>只做「设置值 → *Config → updateConfig」「事件 → 模块」和「模块 → 聊天/音效」的搬运：
- * 不新增 UI、不绘制、不做检测算法（检测端按逆向报告 §7.1 由宿主钩子负责）。
+ * <p>只做「设置值 → *Config → updateConfig」和「事件 → 模块」的搬运：
+ * 不新增 UI、不绘制、不做检测算法。
  * 会话统计只产出 [session] 里的快照数据，当前不渲染（UI 冻结）。
  */
 object AdninRuntime {
 
     private val minecraft: Minecraft get() = Minecraft.getMinecraft()
-
-    /** 配置模板：只在宿主层构造，模块内部始终拿副本。 */
-    private val acConfig = AnticheatConfig()
 
     /** 队伍判定由宿主注入：读原版 scoreboard，模块本身不解析队伍。 */
     private val chatConfig = ChatConfig().apply {
@@ -41,32 +30,21 @@ object AdninRuntime {
 
     private val sessionConfig = SessionConfig()
 
-    val anticheat = AnticheatModule(acConfig)
     val chat = ChatDataModule(chatConfig)
     val session = SessionModule(sessionConfig)
 
     /** 参数指纹：只有设置页数值变化时才重建 Config，避免每 tick 无谓拷贝。 */
-    private var acFingerprint: List<Any?>? = null
     private var chatFingerprint: List<Any?>? = null
     private var sessionFingerprint: List<Any?>? = null
 
-    private var selfName = ""
     private var matchActive = false
     private var victorySeen = false
-
-    init {
-        anticheat.setFlagSoundSink(AnticheatApi.FlagSoundSink { name, volume, pitch ->
-            minecraft.thePlayer?.playSound(name, volume, pitch)
-        })
-        anticheat.addAlertListener { alert -> printAlert(alert) }
-    }
 
     // ---------------------------------------------------------------- 每 tick
 
     fun sync(m: FpsToolsModule) {
         try {
             val on = m.enabled
-            syncAnticheat(m, on)
             syncChat(m, on)
             syncSession(m, on)
         } catch (t: Throwable) {
@@ -76,11 +54,6 @@ object AdninRuntime {
 
     fun tick(nowMs: Long) {
         try {
-            val name = minecraft.thePlayer?.name
-            if (name != null && name != selfName) {
-                selfName = name
-                anticheat.setSelfName(name)
-            }
             session.tick(nowMs)
         } catch (t: Throwable) {
             DangoLogger.error("Dango Music adnin tick failed: {}", t)
@@ -125,31 +98,6 @@ object AdninRuntime {
 
     // ---------------------------------------------------------------- 配置同步
 
-    private fun syncAnticheat(m: FpsToolsModule, on: Boolean) {
-        val values = listOf<Any?>(
-            on, m.acEnabled.get(), m.acSound.get(), m.acAutoBlock.get(), m.acLegitScaffold.get(),
-            m.acScaffoldA.get(), m.acScaffoldB.get(), m.acNoSlow.get(),
-            m.acConfirmCount.value, m.acWindowSeconds.value,
-            m.acMinConfidence.value, m.acLegitMultiplier.value,
-        )
-        if (values == acFingerprint) return
-        acFingerprint = values
-
-        val cfg = acConfig.copy()
-        cfg.anticheat = on && m.acEnabled.get()
-        cfg.flagSound = m.acSound.get()
-        cfg.autoblock = m.acAutoBlock.get()
-        cfg.legitScaffold = m.acLegitScaffold.get()
-        cfg.scaffoldA = m.acScaffoldA.get()
-        cfg.scaffoldB = m.acScaffoldB.get()
-        cfg.noSlow = m.acNoSlow.get()
-        cfg.confirmFlagCount = m.acConfirmCount.value.coerceIn(1, 10)
-        cfg.flagWindowMs = m.acWindowSeconds.value.coerceIn(1, 60).toLong() * 1000L
-        cfg.minConfidence = m.acMinConfidence.value.coerceIn(0f, 1f).toDouble()
-        cfg.legitScaffoldMultiplier = m.acLegitMultiplier.value.coerceIn(1, 5)
-        anticheat.updateConfig(cfg)
-    }
-
     private fun syncChat(m: FpsToolsModule, on: Boolean) {
         val values = listOf<Any?>(
             on, m.adChatEnabled.get(), m.adChatIgnoreTeammates.get(), m.adChatCompactBlacklist.get(),
@@ -187,17 +135,6 @@ object AdninRuntime {
         cfg.maxSessionMs = m.adSessionMaxMinutes.value.coerceIn(0, 180).toLong() * 60_000L
         cfg.avgTimeRoundSeconds = m.adSessionAvgRoundSeconds.value.coerceIn(1, 60)
         session.updateConfig(cfg)
-    }
-
-    // ---------------------------------------------------------------- 输出
-
-    /** 告警只走一条聊天输出，避免与宿主其它告警叠出两份。 */
-    private fun printAlert(alert: Alert) {
-        val player = minecraft.thePlayer ?: return
-        val label = if (alert.label == PlayerLabel.NONE) "" else " " + alert.label.displayName
-        val text = "[AC] " + alert.player + " " + alert.type.name + label +
-                String.format(Locale.ROOT, " (%.2f / %d)", alert.confidence, alert.flagCount)
-        player.addChatMessage(ChatComponentText(text))
     }
 
     /** 队友判定：原版 scoreboard 同一队伍；自己视为队友（用于过滤自己的发言）。 */

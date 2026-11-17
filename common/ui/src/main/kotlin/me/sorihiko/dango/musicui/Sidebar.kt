@@ -66,11 +66,11 @@ internal class Sidebar(private val screen: MusicScreen) {
         if (searchFocused) ctx.drawShape(searchRect, ShapeStyle(Color(0f, 0f, 0f, 0f), 10f, 1f, RED))
         ctx.drawShape(LayoutBounds(x + 11f, y + 10f, 9f, 9f), ShapeStyle(Color(0f, 0f, 0f, 0f), 4.5f, 1.4f, Theme.TEXT_SECONDARY))
         ctx.drawShape(LayoutBounds(x + 18.5f, y + 18f, 4.5f, 1.6f), ShapeStyle(Theme.TEXT_SECONDARY, 0.8f))
-        val shown = if (searchText.isEmpty() && !searchFocused) "搜索歌曲…" else search.display(searchFocused && caretVisible())
+        val shown = if (searchText.isEmpty() && !searchFocused) "搜索歌曲 / 歌单 / 本地…" else search.display(searchFocused && caretVisible())
         val shownColor = if (searchText.isEmpty() && !searchFocused) Theme.TEXT_TERTIARY else Theme.TEXT_PRIMARY
         val maxW = searchRect.right - 10f - (x + 30f)
-        var visible = shown
-        while (visible.length > 1 && ui.width(visible, 12f) > maxW) visible = visible.substring(1)   // 太长时显示末尾
+        // 太长时显示末尾：二分裁剪，长文本不会每帧逐字符重新测量
+        val visible = ui.trimStart(shown, maxW, 12f)
         ui.text(visible, x + 30f, y + 10f, 12f, shownColor)
         ui.hits += searchRect to { searchFocused = true }
         y += 42f
@@ -156,7 +156,8 @@ internal class Sidebar(private val screen: MusicScreen) {
         // 设置按钮（歌单会在打开播放器时自动刷新，不需要刷新按钮）
         val by = side.bottom - footerH + 8f
         val sb = LayoutBounds(x, by, iw, 32f)
-        val on = page == Page.SETTINGS
+        // 设置入口在模块专用设置页里同样保持选中
+        val on = page == Page.SETTINGS || page == Page.SETTINGS_DETAIL
         ui.panel(sb, 10f, active = on)
         if (on) ctx.drawShape(sb, ShapeStyle(Color(0f, 0f, 0f, 0f), 10f, 1f, RED.copy(a = 0.6f)))
         val sCol = if (on) RED else Theme.TEXT_PRIMARY
@@ -164,7 +165,7 @@ internal class Sidebar(private val screen: MusicScreen) {
         val sw = 14f + 6f + ui.width(sLabel, 12f, Theme.FONT_SEMIBOLD)
         val sx = sb.x + (sb.width - sw) / 2f
         ui.icon("⚙", sx + 7f, sb.y + 16f, 14f, sCol)
-        ui.text(sLabel, sx + 20f, sb.y + 16f - 12f * 0.39f - 0.5f, 12f, sCol, Theme.FONT_SEMIBOLD)
+        ui.text(sLabel, sx + 20f, Theme.textCenterY(sb.y + 16f, 12f), 12f, sCol, Theme.FONT_SEMIBOLD)
         ui.hits += sb to { screen.toggleSettings() }
 
         drawAccount(side)
@@ -255,14 +256,15 @@ internal class Sidebar(private val screen: MusicScreen) {
             ui.text(actionLabel, action.x + 5f, action.y + 6f, 10f,
                 if (on) RED else Theme.TEXT_TERTIARY, Theme.FONT_MEDIUM)
 
-            // 行主体：已登录 = 切换平台（不重新扫码）；未登录 = 打开登录弹窗
+            // 行主体：已登录 = 切换平台（不重新扫码）；QQ / 酷狗未登录也允许直接切换（内置音源可直接搜索播放）；
+            // 只有网易云未登录时点主体才会打开登录弹窗
             val body = LayoutBounds(row.x, row.y, max(1f, action.x - row.x - 4f), row.height)
             ui.hits += body to {
-                if (logged) {
-                    LoginAccounts.setActivePlatform(provider)
-                } else {
-                    LoginAccounts.setActivePlatform(provider)
+                LoginAccounts.setActivePlatform(provider)
+                if (!logged && provider == "netease") {
                     screen.login.open()
+                } else {
+                    Library.onPlatformChanged()
                 }
             }
             // 右侧小按钮：已登录 = 退出；未登录 = 登录

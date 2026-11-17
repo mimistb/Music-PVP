@@ -15,6 +15,10 @@ class NeteaseTrack(
     /** 热度 0..100；-1 未知 */
     val popularity: Int = -1,
     val album: String = "",
+    /** 音源：netease / qq / kugou；搜索结果与播放地址都按它分流 */
+    val provider: String = "netease",
+    /** 该音源自己的歌曲标识（QQ：songmid；酷狗：hash|albumId）；netease 时等于 id */
+    val providerId: String = id.toString(),
 ) {
     /** 用详情接口的数据补上缺的字段（歌名 / 歌手 / 时长保持原样） */
     fun fillFrom(detail: NeteaseTrack): NeteaseTrack = NeteaseTrack(
@@ -23,6 +27,7 @@ class NeteaseTrack(
         if (fee >= 0) fee else detail.fee,
         if (popularity > 0) popularity else detail.popularity,
         album.ifEmpty { detail.album },
+        provider, providerId,
     )
 
     companion object {
@@ -66,4 +71,10 @@ class NeteaseTrack(
             }
         }
     }
+}
+
+/** 给 QQ / 酷狗这类没有网易云数字 ID 的音源生成稳定的正数 ID（负数已被本地歌曲占用） */
+internal fun stableProviderId(provider: String, key: String): Long {
+    val h = (provider + ':' + key).hashCode().toLong() and 0x7FFFFFFFL
+    return if (h == 0L) 1L else h
 }

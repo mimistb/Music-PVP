@@ -2,7 +2,10 @@ package me.sorihiko.dango.utils.render
 
 import net.minecraft.client.renderer.GlStateManager
 import org.lwjgl.BufferUtils
+import java.nio.FloatBuffer
+import java.nio.IntBuffer
 import org.lwjgl.opengl.GL11
+import org.lwjgl.opengl.GL12
 import org.lwjgl.opengl.GL13
 import org.lwjgl.opengl.GL14
 import org.lwjgl.opengl.GL20
@@ -16,6 +19,12 @@ import org.lwjgl.opengl.GL20
  * 两边都设一遍，就能保证缓存 == 真实 == 进来时的状态。
  */
 class GlStateSnapshot {
+    private companion object {
+        /** 复用同一块直接缓冲：原来每次快照都 createFloatBuffer(16)，HUD 每帧都在分配直接内存 */
+        val BUF: FloatBuffer = BufferUtils.createFloatBuffer(16)
+        val IBUF: IntBuffer = BufferUtils.createIntBuffer(16)
+    }
+
     private var program = 0
     private var activeTex = GL13.GL_TEXTURE0
     private val tex2d = BooleanArray(2)
@@ -35,9 +44,23 @@ class GlStateSnapshot {
     private var shadeModel = GL11.GL_SMOOTH
     private var matrixMode = GL11.GL_MODELVIEW
     private val color = FloatArray(4)
+    private val viewport = IntArray(4)
+    private var light0 = false
+    private var light1 = false
+    private var colorMaterial = false
+    private var rescaleNormal = false
 
     init {
-        val buf = BufferUtils.createFloatBuffer(16)
+        capture()
+    }
+
+    /**
+     * 重新记录当前状态。想把快照对象做成成员复用（HUD 每帧几十个画布）时调它，
+     * 避免每帧 new 一批小数组。
+     */
+    fun capture() {
+        val buf = BUF
+        buf.clear()
         program = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM)
         activeTex = GL11.glGetInteger(GL13.GL_ACTIVE_TEXTURE)
         for (i in 0..1) {
@@ -70,6 +93,17 @@ class GlStateSnapshot {
         buf.clear()
         GL11.glGetFloat(GL11.GL_CURRENT_COLOR, buf)
         for (k in 0..3) color[k] = buf.get(k)
+
+        val ib = IBUF
+        ib.clear()
+        GL11.glGetInteger(GL11.GL_VIEWPORT, ib)
+        for (k in 0..3) viewport[k] = ib.get(k)
+
+        // 光照与材质：手部 / 物品的明暗完全依赖这些，漏了就会被画成黑色剪影
+        light0 = GL11.glIsEnabled(GL11.GL_LIGHT0)
+        light1 = GL11.glIsEnabled(GL11.GL_LIGHT1)
+        colorMaterial = GL11.glIsEnabled(GL11.GL_COLOR_MATERIAL)
+        rescaleNormal = GL11.glIsEnabled(GL12.GL_RESCALE_NORMAL)
     }
 
     private inline fun cap(on: Boolean, cap: Int, enable: () -> Unit, disable: () -> Unit) {
@@ -105,6 +139,12 @@ class GlStateSnapshot {
         cap(alphaTest, GL11.GL_ALPHA_TEST, { GlStateManager.enableAlpha() }, { GlStateManager.disableAlpha() })
         cap(fog, GL11.GL_FOG, { GlStateManager.enableFog() }, { GlStateManager.disableFog() })
         cap(lighting, GL11.GL_LIGHTING, { GlStateManager.enableLighting() }, { GlStateManager.disableLighting() })
+        cap(light0, GL11.GL_LIGHT0, { GlStateManager.enableLight(0) }, { GlStateManager.disableLight(0) })
+        cap(light1, GL11.GL_LIGHT1, { GlStateManager.enableLight(1) }, { GlStateManager.disableLight(1) })
+        cap(colorMaterial, GL11.GL_COLOR_MATERIAL, { GlStateManager.enableColorMaterial() }, { GlStateManager.disableColorMaterial() })
+        cap(rescaleNormal, GL12.GL_RESCALE_NORMAL, { GlStateManager.enableRescaleNormal() }, { GlStateManager.disableRescaleNormal() })
+
+        GL11.glViewport(viewport[0], viewport[1], viewport[2], viewport[3])
 
         GlStateManager.depthMask(depthMask)
         GL11.glDepthMask(depthMask)

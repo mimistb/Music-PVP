@@ -5,6 +5,7 @@ import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import me.sorihiko.dango.DangoLogger
+import me.sorihiko.dango.security.Redact
 
 import java.awt.image.BufferedImage
 import java.math.BigInteger
@@ -96,7 +97,8 @@ object NeteaseLogin {
                 }
             }
         } catch (e: Exception) {
-            DangoLogger.warn("NetEase QR login failed: {}", e.toString())
+            // 异常信息里可能带二维码 key（等同一次性登录凭据），写日志前脱敏
+            DangoLogger.warn("NetEase QR login failed: {}", Redact.text(e.toString()))
             if (my == session) state = State.ERROR
         }
     }

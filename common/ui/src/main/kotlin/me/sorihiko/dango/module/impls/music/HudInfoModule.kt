@@ -11,6 +11,7 @@ import me.sorihiko.dango.module.ModuleMeta
 import me.sorihiko.dango.module.values.BooleanValue
 import me.sorihiko.dango.module.values.FloatValue
 import me.sorihiko.dango.module.values.ModuleValue
+import me.sorihiko.dango.ui.HudReveal
 import me.sorihiko.dango.ui.LayoutBounds
 import me.sorihiko.dango.ui.ShadowStyle
 import me.sorihiko.dango.ui.ShapeStyle
@@ -23,11 +24,11 @@ import java.util.Date
 import kotlin.math.min
 
 /**
- * 信息胶囊：玩家名 / 帧率 / 延迟 / 时间，尾部可选护甲与点击速度。
+ * 信息胶囊：玩家名 / 帧率 / 延迟 / 时间，尾部可选点击速度。
  * 从灵动岛里拆出来的独立模块，液态玻璃底，位置可以拖动 / 微调。
  *
  * <p>每一类信息各自一个小胶囊，横向排开，不再挤在同一条里；
- * 护甲与 CPS 的数据由 legacy 的 FpsPortRuntime 每 tick 写进 companion 的静态桥字段，
+ * CPS 数据由 legacy 的 FpsPortRuntime 每 tick 写进 companion 的静态桥字段，
  * 本模块只负责排版与绘制（common 不能反向依赖 legacy）。
  */
 @ModuleMeta(Category.MUSIC, "HudInfo")
@@ -51,10 +52,10 @@ class HudInfoModule : Module() {
     @ModuleValue("缩放", "胶囊大小")
     private val scale = FloatValue(0.6f, 1.6f, 1f, 2)
 
-    @ModuleValue("X 坐标", "玩家名 / 护甲的水平位置（打开聊天栏后可拖动）")
+    @ModuleValue("X 坐标", "玩家名的水平位置（打开聊天栏后可拖动）")
     private val posX = FloatValue(0f, 1f, 0.40f, 3)
 
-    @ModuleValue("Y 坐标", "玩家名 / 护甲的垂直位置（打开聊天栏后可拖动）")
+    @ModuleValue("Y 坐标", "玩家名的垂直位置（打开聊天栏后可拖动）")
     private val posY = FloatValue(0f, 1f, 0f, 3)
 
     @ModuleValue("帧率 X 坐标", "帧率胶囊的水平位置（打开聊天栏后可单独拖动）")
@@ -97,7 +98,7 @@ class HudInfoModule : Module() {
 
     /**
      * 每帧的文字段：文字 / 告警色 / 加粗。
-     * 容量 24：基础 4 段 + 护甲最多 4 段 + CPS 1 段，留足余量，避免扩容越界。
+     * 容量 12：基础 4 段 + CPS 1 段，留足余量，避免扩容越界。
      */
     private val segText = arrayOfNulls<String>(24)
     private val segWarn = BooleanArray(24)
@@ -109,6 +110,11 @@ class HudInfoModule : Module() {
     private val blockEnd = IntArray(8)
     private val blockKind = IntArray(8)
     private var blockCount = 0
+
+    /** 布局用的三个数组（宽 / x / y）：按帧复用，避免每帧 new 三份 FloatArray */
+    private val chipWidths = FloatArray(8)
+    private val chipXs = FloatArray(8)
+    private val chipYs = FloatArray(8)
 
     /** fps / 延迟 / 玩家名 / CPS 的字符串缓存：数值没变就直接复用，避免每帧新建字符串 */
     private var lastFps = Int.MIN_VALUE
@@ -137,6 +143,7 @@ class HudInfoModule : Module() {
     /** 关闭液态玻璃时的纯黑胶囊与描边 */
     private val darkChip = Color(0.02f, 0.02f, 0.03f, 0.9f)
     private val chipBorder = Color(1f, 1f, 1f, 0.07f)
+    private val chipDarkStyle = ShapeStyle(darkChip, chipH / 2f, 1f, chipBorder)
 
     override fun init() {
         instance = this
@@ -164,7 +171,6 @@ class HudInfoModule : Module() {
         segCount = 0
         blockCount = 0
         val platform = DangoClient.platform
-        // 玩家名与护甲共用一个胶囊：它们始终相邻，拆分后位置项会翻倍且无实际意义
         addBlock(KIND_IDENTITY) {
             if (showName.get()) {
                 val name = platform.playerName
@@ -173,13 +179,6 @@ class HudInfoModule : Module() {
                     nameText = name
                 }
                 addSeg(nameText, bold = true)
-            }
-            val armor = armorSegments
-            val warn = armorWarn
-            if (armor != null) {
-                for (i in armor.indices) {
-                    addSeg(armor[i], warn != null && i < warn.size && warn[i])
-                }
             }
         }
         addBlock(KIND_FPS) {
@@ -292,10 +291,10 @@ class HudInfoModule : Module() {
         val my = platform.mouseY / k
         val h = chipH
 
-        // 每个胶囊按自己的位置项独立摆放：名字+护甲 / 帧率 / 延迟 / 时间 / CPS
-        val widths = FloatArray(blockCount)
-        val xs = FloatArray(blockCount)
-        val ys = FloatArray(blockCount)
+        // 每个胶囊按自己的位置项独立摆放：名字 / 帧率 / 延迟 / 时间 / CPS
+        val widths = chipWidths
+        val xs = chipXs
+        val ys = chipYs
         for (b in 0 until blockCount) {
             widths[b] = chipWidth(b)
             val bw = widths[b]
@@ -338,6 +337,7 @@ class HudInfoModule : Module() {
         ctx.begin(glass.get(), mx.toInt(), my.toInt())
         try {
             ctx.pushScale(k, k, 1f)
+            ctx.pushOpacity(HudReveal.alpha())
             val glassOn = glass.get()
             mt.clear()
             // 独立位置后不能再裁成整行矩形，否则拖到别处的胶囊会被裁掉
@@ -347,9 +347,10 @@ class HudInfoModule : Module() {
                 if (glassOn) {
                     ctx.drawGlass(chip, chipGlass)
                 } else {
-                    ctx.drawShape(chip, ShapeStyle(darkChip, h / 2f, 1f, chipBorder))
+                    ctx.drawShape(chip, chipDarkStyle)
                 }
-                val ty = chip.y + h / 2f - 12f * 0.39f - 0.5f
+
+                val ty = Theme.textCenterY(chip.y + h / 2f, 12f)
                 var tx = chip.x + chipPad
                 for (i in blockStart[b] until blockEnd[b]) {
                     if (i > blockStart[b]) {
@@ -367,6 +368,7 @@ class HudInfoModule : Module() {
                     tx += width(s, 12f, font)
                 }
             }
+            ctx.popOpacity()
             ctx.popTransform()
             mt.flush(k)
         } finally {
@@ -375,7 +377,7 @@ class HudInfoModule : Module() {
     }
 
     companion object {
-        /** 胶囊类型：玩家名+护甲 / 帧率 / 延迟 / 时间 / CPS */
+        /** 胶囊类型：玩家名 / 帧率 / 延迟 / 时间 / CPS */
         private const val KIND_IDENTITY = 0
         private const val KIND_FPS = 1
         private const val KIND_PING = 2
@@ -386,16 +388,6 @@ class HudInfoModule : Module() {
         private var instance: HudInfoModule? = null
 
         fun of(): HudInfoModule? = instance
-
-        /** legacy 每 tick 写入的护甲文字快照；null = 不显示 */
-        @JvmStatic
-        @Volatile
-        var armorSegments: Array<String>? = null
-
-        /** 与 [armorSegments] 等长；true 表示该段低于耐久阈值 */
-        @JvmStatic
-        @Volatile
-        var armorWarn: BooleanArray? = null
 
         /** 左 / 右键 CPS；-1 表示该侧不显示 */
         @JvmStatic

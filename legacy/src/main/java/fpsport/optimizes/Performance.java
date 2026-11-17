@@ -84,6 +84,22 @@ public class Performance extends Feature {
     public static int entityCullingInterval = 50;
     /** 实体剔除的最低实体数，0 = 交给遮挡率自行判断。 */
     public static int entityCullingMinEntities = 0;
+    /**
+     * 实体视野锥剔除（新增）：只提交位于玩家视野角内的活体，背后的实体直接跳过。
+     * 与「实体渲染距离」叠加生效，默认关闭。
+     */
+    public static boolean entityFovCulling = false;
+    /** 视野锥角度（度），60 ~ 170；角度越小，被剔除的侧后方实体越多。 */
+    public static int entityFovAngle = 110;
+    /** 远处名牌剔除（新增）：超过 {@link #nametagDistance} 的活体不再绘制名牌 / 血条。 */
+    public static boolean nametagCulling = false;
+    /** 名牌可见距离（格），16 ~ 128。 */
+    public static int nametagDistance = 64;
+    /**
+     * 关闭云层渲染（新增）：云层是每帧单独提交的一层几何，关掉后能直接省下这部分顶点与填充开销。
+     * 只影响云，不影响天空盒 / 日月，默认关闭。
+     */
+    public static boolean hideClouds = false;
     /** 替换字体点阵高度。 */
     public static int customHudFontSize = 16;
     /** 各类实体的渲染距离系数（1.0 = 原版）。 */
@@ -102,6 +118,8 @@ public class Performance extends Feature {
 
     /** 设置变化后需要延迟到下一 tick 的世界刷新标记。 */
     private static volatile boolean pendingWorldRefresh;
+    /** 隐藏方块开关变化后需要重建区块网格。 */
+    private static volatile boolean pendingChunkReload;
 
     /** 宿主可选注入：应用纹理分辨率（原实现是 {@code TextureResolution.apply()}）。不注入时只有 UI 效果。 */
     public static Runnable textureResolutionApplier = () -> {
@@ -121,8 +139,14 @@ public class Performance extends Feature {
     private static int appliedRenderDistance = -1;
     /** 上一次已应用的实体阴影开关。 */
     private static boolean appliedEntityShadows = false;
+    /** 上一次已应用的云层开关。 */
+    private static boolean appliedHideClouds = false;
     /** 首次应用前记录的原版渲染距离，用于切回「跟随原版」时写回。 */
     private static int vanillaRenderDistance = -1;
+    /** 首次应用前记录的原版实体阴影 / 云层，关闭模块时按原样还原。 */
+    private static boolean vanillaEntityShadows = true;
+    /** 1.8.9 的云层是 int（0 = 关闭，1 / 2 = 简单 / 精细），默认 2。 */
+    private static int vanillaClouds = 2;
 
     public Performance() {
         super("Performance");
@@ -134,12 +158,15 @@ public class Performance extends Feature {
     protected void onEnable() {
         using = true;
         pendingWorldRefresh = true;
+        pendingChunkReload = true;
     }
 
     @Override
     protected void onDisable() {
         using = false;
         pendingWorldRefresh = true;
+        // 关闭总开关时要把隐藏方块 / 渲染距离 / 实体阴影全部还原，否则会一直保持优化后的画面
+        pendingChunkReload = true;
         hidingBlocks = false;
     }
 
@@ -151,19 +178,26 @@ public class Performance extends Feature {
      */
     public static void onClientTick() {
         Minecraft mc = Minecraft.getMinecraft();
-        // 渲染距离 / 实体阴影只在模块开启时写回原版设置
-        if (mc != null && using) {
-            applySettings(mc);
+        // 渲染距离 / 实体阴影只在模块开启时写回原版设置；关闭时还原
+        if (mc != null) {
+            if (using) {
+                applySettings(mc);
+            } else {
+                restoreSettings(mc);
+            }
         }
-        if (!pendingWorldRefresh) {
-            return;
+        if (pendingChunkReload) {
+            pendingChunkReload = false;
+            if (mc != null && mc.renderGlobal != null && mc.theWorld != null) {
+                // 无论隐藏是「开」还是「关」都要重建：否则关掉隐藏后旧网格会一直保留
+                mc.renderGlobal.loadRenderers();
+            }
         }
-        pendingWorldRefresh = false;
-        if (mc != null && hidingBlocks && mc.renderGlobal != null && mc.theWorld != null) {
-            mc.renderGlobal.loadRenderers();
+        if (pendingWorldRefresh) {
+            pendingWorldRefresh = false;
+            // 纹理分辨率（mipmap 下限）由宿主注入，没有注入时这里是空实现。
+            textureResolutionApplier.run();
         }
-        // 纹理分辨率（mipmap 下限）由宿主注入，没有注入时这里是空实现。
-        textureResolutionApplier.run();
     }
 
     /** 宿主在设置界面改动 {@link #textureResolution} 后调用。 */
@@ -181,34 +215,72 @@ public class Performance extends Feature {
         if (mc.gameSettings == null) {
             return;
         }
-        if (vanillaRenderDistance < 0) {
-            vanillaRenderDistance = mc.gameSettings.renderDistanceChunks;
-        }
         if (renderDistance != appliedRenderDistance) {
-            appliedRenderDistance = renderDistance;
             if (renderDistance > 0) {
+                // 只在「还没覆盖过」时记录原版值，避免把上一次优化值当成原版值
+                if (appliedRenderDistance <= 0) {
+                    vanillaRenderDistance = mc.gameSettings.renderDistanceChunks;
+                }
+                appliedRenderDistance = renderDistance;
                 mc.gameSettings.renderDistanceChunks = renderDistance;
                 if (mc.renderGlobal != null) {
                     mc.renderGlobal.loadRenderers();
                 }
-            } else if (vanillaRenderDistance > 0) {
-                mc.gameSettings.renderDistanceChunks = vanillaRenderDistance;
-                if (mc.renderGlobal != null) {
-                    mc.renderGlobal.loadRenderers();
+            } else {
+                appliedRenderDistance = 0;
+                if (vanillaRenderDistance > 0) {
+                    mc.gameSettings.renderDistanceChunks = vanillaRenderDistance;
+                    if (mc.renderGlobal != null) {
+                        mc.renderGlobal.loadRenderers();
+                    }
                 }
             }
         }
         if (entityShadows != appliedEntityShadows) {
+            // 只在第一次覆盖前记录原版值，避免把优化后的值当成原版值
+            if (entityShadows) {
+                vanillaEntityShadows = mc.gameSettings.entityShadows;
+            }
             appliedEntityShadows = entityShadows;
-            mc.gameSettings.entityShadows = !entityShadows;
+            mc.gameSettings.entityShadows = entityShadows ? false : vanillaEntityShadows;
+        }
+        if (hideClouds != appliedHideClouds) {
+            if (hideClouds) {
+                vanillaClouds = mc.gameSettings.clouds;
+            }
+            appliedHideClouds = hideClouds;
+            mc.gameSettings.clouds = hideClouds ? 0 : vanillaClouds;
         }
     }
 
-    /** 六个隐藏方块开关变化后调用，重新计算 {@link #hidingBlocks} 并请求一次世界刷新。 */
+    /** 总开关关闭时还原被改写的原版设置（渲染距离 / 实体阴影）。 */
+    private static void restoreSettings(Minecraft mc) {
+        if (mc.gameSettings == null) {
+            return;
+        }
+        if (appliedRenderDistance > 0 && vanillaRenderDistance > 0) {
+            mc.gameSettings.renderDistanceChunks = vanillaRenderDistance;
+            appliedRenderDistance = 0;
+            if (mc.renderGlobal != null) {
+                mc.renderGlobal.loadRenderers();
+            }
+        }
+        if (appliedEntityShadows) {
+            appliedEntityShadows = false;
+            mc.gameSettings.entityShadows = vanillaEntityShadows;
+        }
+        if (appliedHideClouds) {
+            appliedHideClouds = false;
+            mc.gameSettings.clouds = vanillaClouds;
+        }
+        vanillaRenderDistance = -1;
+    }
+
+    /** 六个隐藏方块开关变化后调用，重新计算 {@link #hidingBlocks} 并请求一次世界重建。 */
     public static void refreshHidingBlocks() {
         hidingBlocks = hideTallGrass || hideDoubleTallGrass || hideFlowers || hideDoubleTallFlowers
                 || hideFences || hideFenceGates;
-        pendingWorldRefresh = true;
+        pendingChunkReload = true;
     }
 
     /**

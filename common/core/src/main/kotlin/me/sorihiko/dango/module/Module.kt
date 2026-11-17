@@ -8,6 +8,23 @@ import me.sorihiko.dango.events.ModuleToggleEvent
 abstract class Module : Listener {
     val category = javaClass.getAnnotation(ModuleMeta::class.java).category
     val name = javaClass.getAnnotation(ModuleMeta::class.java).name
+
+    /**
+     * 配置里没有这个模块的键时使用的默认开关。
+     *
+     * 不能在 init() 里直接写 enabled——那时事件监听器还没注册，
+     * 开关事件会丢失，而且用户配置里缺键时会变成关不掉。
+     */
+    open val defaultEnabled: Boolean get() = false
+
+    /**
+     * 全新配置（首次安装）时是否跟随其它模块一起打开。
+     *
+     * 默认 true 保持原有“新装全开”的行为；默认关闭的新模块覆盖为 false，
+     * 避免首次启动就被强制打开。
+     */
+    open val enabledOnFreshConfig: Boolean get() = true
+
     var enabled = false
         set(value) {
             if (field == value) return

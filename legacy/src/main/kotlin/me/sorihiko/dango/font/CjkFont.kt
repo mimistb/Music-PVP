@@ -270,13 +270,30 @@ object CjkFont {
 
     /** 图标：把字形的可见部分居中放在 (cx, cy) */
     fun drawCentered(s: String, cx: Float, cy: Float, size: Float, style: Int) {
-        val list = s.mapNotNull { glyph(it, style) }
-        if (list.isEmpty()) return
-        val scale = size / list[0].base
+        if (s.isEmpty()) return
+        // 两遍扫描代替 mapNotNull：HUD 图标每帧都会调到这里，原来每帧都新建一个 List
+        var firstBase = 0f
         var total = 0f
-        list.forEachIndexed { i, g -> total += if (i == list.size - 1) g.w else g.adv }
+        var lastRendered = -1
+        for (i in s.indices) {
+            val g = glyph(s[i], style) ?: continue
+            if (firstBase == 0f) firstBase = g.base
+            total += if (i == s.lastIndex) g.w else g.adv
+            lastRendered = i
+        }
+        if (lastRendered < 0) return
+        // 末尾如果有没有字形的字符，按最后一个真正画出来的字重算一次可见宽度
+        if (lastRendered != s.lastIndex) {
+            total = 0f
+            for (i in 0..lastRendered) {
+                val g = glyph(s[i], style) ?: continue
+                total += if (i == lastRendered) g.w else g.adv
+            }
+        }
+        val scale = size / firstBase
         var pen = cx - total * scale / 2f
-        for (g in list) {
+        for (c in s) {
+            val g = glyph(c, style) ?: continue
             if (g.page >= 0) {
                 bindPage(g.page)
                 GL11.glBegin(GL11.GL_QUADS)

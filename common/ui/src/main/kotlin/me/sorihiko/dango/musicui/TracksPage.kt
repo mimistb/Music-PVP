@@ -111,7 +111,7 @@ internal class TracksPage(private val screen: MusicScreen) {
         Page.FREE -> "免费听" to Library.free
         Page.PLAYLIST -> {
             val p = ScreenState.opened
-            (p?.name ?: "") to (if (p != null) Library.tracks(p.id) else null)
+            (p?.name ?: "") to (if (p != null) Library.tracks(p) else null)
         }
         else -> "" to null
     }
@@ -200,7 +200,11 @@ internal class TracksPage(private val screen: MusicScreen) {
         area = LayoutBounds(page.x, y + headerH, page.width, page.bottom - (y + headerH))
         if (tracks == null) {
             // 歌单读取失败 / 还没读完：空闲且过了冷却时间就自动再读一次
-            if (ScreenState.page == Page.PLAYLIST) ScreenState.opened?.let { Library.ensureTracks(it.id) }
+            if (ScreenState.page == Page.PLAYLIST) ScreenState.opened?.let { Library.ensureTracks(it) }
+            // 搜索时歌单可能比歌曲先返回：歌曲还没到也先把"相关歌单"画出来
+            if (ScreenState.page == Page.SEARCH && Library.searchPlaylists.isNotEmpty()) {
+                drawPlaylistRow(area, Library.searchPlaylists)
+            }
             // 每日推荐 / 免费听还没读完：给个提示，别让页面空着
             when (ScreenState.page) {
                 Page.DAILY -> if (!NeteaseApi.loggedIn) {
@@ -304,7 +308,7 @@ internal class TracksPage(private val screen: MusicScreen) {
             else -> title
         }
         val segW = 132f
-        ui.text(ui.trim(header, page.right - segW - 24f - x, 22f, Theme.FONT_DISPLAY), x, y + 4f, 22f, Theme.TEXT_PRIMARY, Theme.FONT_DISPLAY)
+        ui.text(ui.trim(header, page.right - segW - 24f - x, Theme.PAGE_TITLE_SIZE, Theme.FONT_DISPLAY), x, y, Theme.PAGE_TITLE_SIZE, Theme.TEXT_PRIMARY, Theme.FONT_DISPLAY)
         val sub = when {
             state.page == Page.SEARCH && Library.searching -> "搜索中…"
             state.page == Page.SEARCH && tracks.isNullOrEmpty() ->
@@ -315,12 +319,12 @@ internal class TracksPage(private val screen: MusicScreen) {
             filterText.isNotEmpty() -> "${shown(tracks).size} / ${tracks.size} 首"
             else -> "${tracks.size} 首歌"
         }
-        ui.text(sub, x, y + 34f, 11f, Theme.TEXT_SECONDARY, Theme.FONT_SEMIBOLD)
+        ui.text(sub, x, y + Theme.PAGE_SUB_Y, 11f, Theme.TEXT_SECONDARY, Theme.FONT_SEMIBOLD)
 
         // 播放全部
         if (!tracks.isNullOrEmpty() && state.page != Page.QUEUE) {
             val label = "播放全部"
-            val pb = LayoutBounds(x, y + (if (headerH > 100f) 64f else 52f) - 6f, ui.width(label, 12f, Theme.FONT_SEMIBOLD) + 44f, 30f)
+            val pb = LayoutBounds(x, y + (if (headerH > 100f) 64f else 55f) - 6f, ui.width(label, 12f, Theme.FONT_SEMIBOLD) + 44f, 30f)
             ctx.drawShape(pb, ShapeStyle(if (ui.hover(pb)) RED.copy(a = 0.85f) else RED, 15f))
             ui.icon("▶", pb.x + 17f, pb.y + 15f, 11f, Theme.TEXT_PRIMARY)
             ui.text(label, pb.x + 30f, pb.y + 9f, 12f, Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD)
@@ -489,7 +493,8 @@ internal class TracksPage(private val screen: MusicScreen) {
         val ctx = ui.ctx
         // 表头
         ui.text("#", list.x + 12f, list.y, 10f, Theme.TEXT_TERTIARY, Theme.FONT_SEMIBOLD)
-        ui.text("歌曲", list.x + 84f, list.y, 10f, Theme.TEXT_TERTIARY, Theme.FONT_SEMIBOLD)
+        // 与行内歌名同一条左基准线：46（序号列）+ 32（缩略图 40-8）+ 12（间距）
+        ui.text("歌曲", list.x + 90f, list.y, 10f, Theme.TEXT_TERTIARY, Theme.FONT_SEMIBOLD)
         val sbW = 16f   // 右边留给滚动条
         ui.text("时长", list.right - sbW - 12f - ui.width("时长", 10f, Theme.FONT_SEMIBOLD), list.y, 10f, Theme.TEXT_TERTIARY, Theme.FONT_SEMIBOLD)
         ctx.drawShape(LayoutBounds(list.x, list.y + 16f, list.width - sbW, 1f), ShapeStyle(Theme.SEPARATOR))
@@ -528,7 +533,7 @@ internal class TracksPage(private val screen: MusicScreen) {
                     ui.text("${i + 1}", row.x + 12f, row.y + 15f, 11f, Theme.TEXT_TERTIARY)
                 }
                 val thumb = LayoutBounds(row.x + 46f, row.y + 4f, row.height - 8f, row.height - 8f)
-                ui.drawCover(thumb, CoverCache.track(t), 6f)
+                ui.drawCover(thumb, CoverCache.track(t, 64), 6f)
                 val tx = thumb.right + 12f
                 val durW = 44f
                 val metaRight = row.right - durW - 12f

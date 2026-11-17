@@ -2,7 +2,7 @@ package me.sorihiko.dango.shader.impls.glow
 
 import me.sorihiko.dango.shader.GlShader
 class GlowUpsampleShader : GlShader(
-    "outline/base.vert",
+    "quad.vert",
     "glow/upsample.frag",
 ) {
     override fun uniformsFields(): Array<String> {

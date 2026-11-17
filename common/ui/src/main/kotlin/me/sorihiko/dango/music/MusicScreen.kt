@@ -3,6 +3,7 @@ package me.sorihiko.dango.music
 import me.sorihiko.dango.DangoClient
 import me.sorihiko.dango.DangoMusic
 import me.sorihiko.dango.module.impls.music.NeteaseMusicModule
+import me.sorihiko.dango.music.LoginAccounts
 import me.sorihiko.dango.musicui.GridPage
 import me.sorihiko.dango.musicui.Library
 import me.sorihiko.dango.musicui.LoginDialog
@@ -52,6 +53,17 @@ class MusicScreen(
 
     private var openedAt = 0L
     private var lastNanos = 0L
+
+    /**
+     * 悬浮面板模式：整块界面由平台层渲染进纹理再以透视画到画面上。
+     * 这种模式下不画全屏暗色遮罩（世界要能正常看见），鼠标位置也由平台层投影后传进来。
+     */
+    var floating = false
+
+    /** 悬浮面板下，鼠标投影到界面平面后的窗口像素坐标（[pointerActive] 为 false 时忽略） */
+    var pointerActive = false
+    var pointerX = 0
+    var pointerY = 0
     /** 换页（含换歌单 / 设置换标签 / 新搜索 / 列表↔封面墙）就重新播入场动画；逐项比较，避免每帧拼字符串 */
     private var pageKeyPage: Page? = null
     private var pageKeyOpened = 0L
@@ -100,7 +112,9 @@ class MusicScreen(
     // ---------------------------------------------------------------- 导航
 
     internal fun go(p: Page) {
-        if (ScreenState.page == Page.SETTINGS && p != Page.SETTINGS) settings.cancelInput()
+        if (ScreenState.page == Page.SETTINGS || ScreenState.page == Page.SETTINGS_DETAIL) settings.cancelInput()
+        // 只保留"当前就在详情页"的情况；任何其它跳转都退回列表态
+        if (p != Page.SETTINGS_DETAIL) ScreenState.settingsDetail = null
         tracks.clearFilter()
         ScreenState.page = p
         ScreenState.backPage = null
@@ -117,6 +131,13 @@ class MusicScreen(
     }
 
     internal fun goBack() {
+        // 详情页只回退一层：详情 -> 设置列表；再退才是离开设置
+        if (ScreenState.page == Page.SETTINGS_DETAIL) {
+            settings.cancelInput()
+            ScreenState.settingsDetail = null
+            ScreenState.page = Page.SETTINGS
+            return
+        }
         if (ScreenState.page == Page.SETTINGS) {
             settings.cancelInput()
             ScreenState.page = ScreenState.settingsBack
@@ -132,13 +153,14 @@ class MusicScreen(
     }
 
     internal fun openPlaylist(p: NeteasePlaylist, from: Page?) {
-        if (ScreenState.opened?.id != p.id) tracks.clearFilter()
+        val prev = ScreenState.opened
+        if (prev == null || prev.id != p.id || prev.provider != p.provider) tracks.clearFilter()
         ScreenState.opened = p
         ScreenState.page = Page.PLAYLIST
         ScreenState.backPage = from
         tracks.resetScroll()
         tracks.resetCoverflow()
-        Library.loadTracks(p.id)
+        Library.loadTracks(p)
     }
 
     internal fun doSearch() {
@@ -155,15 +177,22 @@ class MusicScreen(
     }
 
     internal fun toggleSettings() {
-        settings.commitEdit()
-        blurTextFields()
-        settings.bindingKey = null
-        if (ScreenState.page == Page.SETTINGS) {
+        prepareSettingsSwitch()
+        if (ScreenState.page == Page.SETTINGS || ScreenState.page == Page.SETTINGS_DETAIL) {
             ScreenState.page = ScreenState.settingsBack
         } else {
             ScreenState.settingsBack = ScreenState.page
             ScreenState.page = Page.SETTINGS
         }
+    }
+
+    /** 进出设置页前的统一收尾：提交正在编辑的值、释放文本焦点、取消快捷键录制 */
+    private fun prepareSettingsSwitch() {
+        settings.commitEdit()
+        blurTextFields()
+        settings.bindingKey = null
+        // 从任何入口重新进设置页都落到列表，而不是停在某个模块详情
+        ScreenState.settingsDetail = null
     }
 
     internal fun toggleCoverView() {
@@ -186,8 +215,10 @@ class MusicScreen(
         ui.scale = scale
         ui.lw = platform.windowWidth / scale
         ui.lh = platform.windowHeight / scale
-        ui.mx = (platform.mouseX / scale).toInt()
-        ui.my = (platform.mouseY / scale).toInt()
+        val rawMx = if (floating && pointerActive) pointerX else platform.mouseX
+        val rawMy = if (floating && pointerActive) pointerY else platform.mouseY
+        ui.mx = (rawMx / scale).toInt()
+        ui.my = (rawMy / scale).toInt()
         val ctx = ui.ctx
         val alpha = ui.easeOut((System.currentTimeMillis() - openedAt) / Theme.DUR_SLOW.toFloat())
         ctx.begin(true, ui.mx, ui.my)
@@ -208,7 +239,8 @@ class MusicScreen(
 
             ctx.pushScale(scale, scale, 1f)
             ctx.pushOpacity(alpha)
-            ctx.drawShape(LayoutBounds(0f, 0f, ui.lw, ui.lh), ShapeStyle(Theme.OVERLAY))
+            // 悬浮面板要能看见后面的世界，不铺全屏遮罩
+            if (!floating) ctx.drawShape(LayoutBounds(0f, 0f, ui.lw, ui.lh), ShapeStyle(Theme.OVERLAY))
             drawWindow(alpha)
             ctx.popOpacity()
             ctx.popTransform()
@@ -237,9 +269,7 @@ class MusicScreen(
 
     /** 直接打开播放器设置页（主菜单右上角的功能入口用） */
     fun openSettings() {
-        settings.commitEdit()
-        blurTextFields()
-        settings.bindingKey = null
+        prepareSettingsSwitch()
         ScreenState.settingsBack = ScreenState.page
         ScreenState.page = Page.SETTINGS
     }
@@ -289,12 +319,18 @@ class MusicScreen(
         when (s.page) {
             Page.HOME -> {
                 val rec = Library.recommend
-                val items = if (rec.isNullOrEmpty()) Library.playlists else rec
-                val label = if (rec.isNullOrEmpty()) "你的歌单" else "推荐歌单"
+                // 非网易云平台不拿网易云个人歌单兜底，避免切换后首页短暂显示别的平台数据
+                val fallback = if (LoginAccounts.activePlatform() == "netease") Library.playlists else emptyList()
+                val items = if (rec.isNullOrEmpty()) fallback else rec
+                val label = when {
+                    !rec.isNullOrEmpty() -> "推荐歌单"
+                    fallback.isNotEmpty() -> "你的歌单"
+                    else -> "推荐歌单"
+                }
                 grid.draw(body, "推荐歌单", "$label · ${items.size}", items, Library.recommendLoading && items.isEmpty())
             }
             Page.PARTY -> ui.itemAnim(0) { party.draw(body) }
-            Page.SETTINGS -> settings.draw(body)
+            Page.SETTINGS, Page.SETTINGS_DETAIL -> settings.draw(body)
             else -> tracks.draw(body)
         }
     }
@@ -308,9 +344,15 @@ class MusicScreen(
             login.mouseClicked(mx, my, mouseButton)
             return
         }
-        // 鼠标侧键 / 右键：设置页的分组标题栏 = 展开 / 收起参数栏；其它位置返回上一页
+        // 鼠标侧键 / 右键
         if (mouseButton == 1 || mouseButton == 3) {
-            if (ScreenState.page == Page.SETTINGS && settings.mouseRightClicked(mx, my)) return
+            // 设置列表：右键模块 -> 打开专用设置页；设置详情页：右键控件 -> 恢复默认，
+            // 其它位置右键一律回退一层
+            if ((ScreenState.page == Page.SETTINGS || ScreenState.page == Page.SETTINGS_DETAIL) &&
+                settings.mouseRightClicked(mx, my)
+            ) {
+                return
+            }
             goBack()
             return
         }
@@ -338,7 +380,7 @@ class MusicScreen(
     /** 按住鼠标拖动时调用 */
     fun mouseDragged() {
         if (tracks.sbDragging) {
-            tracks.scrollbarDrag((platform.mouseY / ui.scale).toInt())
+            tracks.scrollbarDrag(ui.my)
             return
         }
         if (!login.visible) bar.mouseDrag(ui.mx, ui.my)
@@ -378,19 +420,26 @@ class MusicScreen(
         if (party.keyTyped(typedChar, keyCode)) return
         if (tracks.filterKeyTyped(typedChar, keyCode)) return
         // 自己设的快捷键在播放器里也能用
-        if (keyCode != Keys.ESCAPE && keyCode != module.openKey.value && module.handleHotkey(keyCode)) return
+        if (keyCode != Keys.ESCAPE && !module.openKey.matchesPress(keyCode, platform) && module.handleHotkey(keyCode)) return
         if (tracks.shortcutBefore(keyCode)) return
         when {
-            // 其它页面 Ctrl+F 是全网搜索
-            platform.ctrlDown && keyCode == Keys.F -> sidebar.searchFocused = true
+            // 其它页面 Ctrl+F / Ctrl+K 是全网聚合搜索（歌曲 + 歌单 + 本地音乐）
+            platform.ctrlDown && (keyCode == Keys.F || keyCode == Keys.K) -> sidebar.searchFocused = true
             keyCode == Keys.SPACE -> MusicPlayer.togglePause()
             keyCode == Keys.BACK -> goBack()
             tracks.coverflowKey(keyCode) -> {}
             keyCode == Keys.RIGHT -> MusicPlayer.seek(MusicPlayer.positionMs + 5000)
             keyCode == Keys.LEFT -> MusicPlayer.seek(MusicPlayer.positionMs - 5000)
-            keyCode == Keys.ESCAPE -> close()
+            keyCode == Keys.ESCAPE -> when {
+                // 刚用 Esc 取消过输入 / 清除过快捷键：这一下不算
+                settings.escapeCloseBlocked() -> {}
+                // 模块专用设置页只退一层，回到设置列表
+                ScreenState.page == Page.SETTINGS_DETAIL -> goBack()
+                else -> close()
+            }
             // 按快捷键打开时，同一次按键事件会紧接着传进这个界面，刚打开的一小会儿里不能把它当成"关闭"
-            keyCode == module.openKey.value && System.currentTimeMillis() - openedAt > 300L -> close()
+            keyCode == module.openKey.primary && module.openKey.matchesPress(keyCode, platform) &&
+                System.currentTimeMillis() - openedAt > 300L -> close()
         }
     }
 }

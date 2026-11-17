@@ -83,7 +83,10 @@ public class OldAnimations extends Feature {
             eyeHeight = START_HEIGHT - delta;
         }
 
-        if (mc.gameSettings.keyBindAttack.isKeyDown()
+        // 只在真正操控游戏时补挥臂：打开聊天栏 / 背包等界面时点击不应触发第一人称挥臂
+        if (mc.currentScreen == null
+                && mc.inGameHasFocus
+                && mc.gameSettings.keyBindAttack.isKeyDown()
                 && thePlayer.isUsingItem()
                 && blockSwing
                 && mc.objectMouseOver != null

@@ -1,0 +1,68 @@
+﻿Starting a Gradle Daemon, 10 busy and 2 incompatible and 3 stopped Daemons could not be reused, use --status for details
+
+> Configure project :
+#################################################
+         ForgeGradle 2.3-1.0.8-9eec2d49        
+   https://github.com/anatawa12/ForgeGradle-2.3  
+#################################################
+                 Powered by MCP                  
+             http://modcoderpack.com             
+     by: Searge, ProfMobius, R4wk, ZeuX          
+     Fesh0r, IngisKahn, bspkrs, LexManos         
+#################################################
+
+> Task :common:core:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :deobfCompileDummyTask UP-TO-DATE
+> Task :deobfProvidedDummyTask UP-TO-DATE
+> Task :compileApiKotlin NO-SOURCE
+> Task :common:core:compileKotlin UP-TO-DATE
+> Task :getVersionJson
+> Task :common:core:compileJava UP-TO-DATE
+> Task :common:ui:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :extractUserdev UP-TO-DATE
+> Task :common:ui:compileKotlin UP-TO-DATE
+> Task :common:ui:compileJava NO-SOURCE
+> Task :common:core:processResources NO-SOURCE
+> Task :common:core:classes UP-TO-DATE
+> Task :common:core:jar UP-TO-DATE
+> Task :common:ui:processResources UP-TO-DATE
+> Task :common:ui:classes UP-TO-DATE
+> Task :common:ui:jar UP-TO-DATE
+> Task :downloadClient SKIPPED
+> Task :downloadServer SKIPPED
+> Task :splitServerJar SKIPPED
+> Task :mergeJars SKIPPED
+> Task :applyBinaryPatches SKIPPED
+> Task :extractDependencyATs SKIPPED
+> Task :extractMcpData SKIPPED
+> Task :extractMcpMappings SKIPPED
+> Task :genSrgs SKIPPED
+> Task :deobfMcMCP SKIPPED
+> Task :sourceApiJava UP-TO-DATE
+> Task :compileApiJava NO-SOURCE
+> Task :processApiResources NO-SOURCE
+> Task :apiClasses UP-TO-DATE
+> Task :sourceMainJava
+> Task :processResources UP-TO-DATE
+> Task :sourceTestJava UP-TO-DATE
+> Task :processTestResources NO-SOURCE
+> Task :compileKotlin
+> Task :compileJava
+> Task :classes
+> Task :jar
+> Task :compileTestKotlin NO-SOURCE
+> Task :compileTestJava NO-SOURCE
+> Task :testClasses UP-TO-DATE
+> Task :test NO-SOURCE
+> Task :reobfJar SKIPPED
+> Task :extractAnnotationsJar
+> Task :shadowJar
+> Task :reobfShadowJar
+> Task :assemble
+> Task :check UP-TO-DATE
+> Task :extractAnnotationsShadowJar
+> Task :build
+
+BUILD SUCCESSFUL in 2m 2s
+15 actionable tasks: 9 executed, 6 up-to-date

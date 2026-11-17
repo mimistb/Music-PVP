@@ -12,7 +12,9 @@ import org.objectweb.asm.tree.InsnList;
 import org.objectweb.asm.tree.InsnNode;
 import org.objectweb.asm.tree.JumpInsnNode;
 import org.objectweb.asm.tree.LabelNode;
+import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
+import org.objectweb.asm.tree.VarInsnNode;
 
 /**
  * 三个「头部直接返回」的补丁，运行时由 {@link FpsFlags} 决定是否生效：
@@ -53,9 +55,19 @@ public final class FpsPortTransformer implements IClassTransformer {
                     new String[]{"addEffect", "func_78873_a", "a"}),
     };
 
+    /** 开发环境里的环境粒子类名（生产环境会被混淆，靠 transform 时登记真实类名） */
+    private static final String[] AMBIENT_SIMPLE = {
+            "EntityLavaFX", "EntityPortalFX", "EntityBubbleFX", "EntitySplashFX", "EntitySuspendedFX",
+            "EntityRainFX", "EntitySnowShovelFX", "EntityCloudFX", "EntitySmokeFX", "EntityLargeSmokeFX",
+    };
+
     @Override
     public byte[] transform(String name, String transformedName, byte[] basicClass) {
         if (basicClass == null) return null;
+        // 环境粒子类被加载时把真实类名登记给 FpsFlags，运行期才能按类型过滤
+        if (transformedName != null && transformedName.contains(".particle.")) {
+            noteAmbient(transformedName, name);
+        }
         Target target = findTarget(transformedName);
         if (target == null) target = findTarget(name);
         if (target == null) return basicClass;
@@ -75,6 +87,17 @@ public final class FpsPortTransformer implements IClassTransformer {
         }
     }
 
+    private static void noteAmbient(String transformedName, String runtimeName) {
+        int dot = transformedName.lastIndexOf('.');
+        String simple = dot >= 0 ? transformedName.substring(dot + 1) : transformedName;
+        for (String candidate : AMBIENT_SIMPLE) {
+            if (candidate.equals(simple)) {
+                FpsFlags.noteParticleClass(runtimeName);
+                return;
+            }
+        }
+    }
+
     private static Target findTarget(String className) {
         if (className == null) return null;
         for (Target target : TARGETS) {
@@ -91,7 +114,14 @@ public final class FpsPortTransformer implements IClassTransformer {
 
             LabelNode skip = new LabelNode();
             InsnList ins = new InsnList();
-            ins.add(new FieldInsnNode(Opcodes.GETSTATIC, FLAGS, target.flag, "Z"));
+            if ("dropParticles".equals(target.flag)) {
+                // 只丢环境粒子：把第一个参数交给 FpsFlags 判断，战斗粒子永远放行
+                ins.add(new VarInsnNode(Opcodes.ALOAD, 1));
+                ins.add(new MethodInsnNode(Opcodes.INVOKESTATIC, FLAGS, "shouldDropParticle",
+                        "(Ljava/lang/Object;)Z", false));
+            } else {
+                ins.add(new FieldInsnNode(Opcodes.GETSTATIC, FLAGS, target.flag, "Z"));
+            }
             ins.add(new JumpInsnNode(Opcodes.IFEQ, skip));
             ins.add(new InsnNode(Opcodes.RETURN));
             ins.add(skip);

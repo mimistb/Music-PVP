@@ -33,27 +33,44 @@ object LegacyGl {
 
     private var glReady = false
 
+    /** 着色器 / 字体是否已经注册过（load 失败后只重试 load，避免重复注册） */
+    private var registered = false
+
+    /** 初始化失败只打一条日志，之后每 tick 静默重试 */
+    private var failedOnce = false
+
     /** 第一次游戏 tick 时调用（这时 OpenGL 已经可用）：编译着色器、加载字体 */
     fun init() {
         if (glReady) return
-        glReady = true
+        try {
+            if (!registered) {
+                shaderManager.register(QuadShader())
+                shaderManager.register(GlowDownsampleShader())
+                shaderManager.register(GlowUpsampleShader())
+                shaderManager.register(GlowCompositeShader())
+                shaderManager.register(ShapeShader())
+                shaderManager.register(FontShader())
+                shaderManager.register(ImageShader())
+                shaderManager.register(GlassShader())
+                shaderManager.register(GlassBlurShader())
 
-        shaderManager.register(QuadShader())
-        shaderManager.register(GlowDownsampleShader())
-        shaderManager.register(GlowUpsampleShader())
-        shaderManager.register(GlowCompositeShader())
-        shaderManager.register(ShapeShader())
-        shaderManager.register(FontShader())
-        shaderManager.register(ImageShader())
-        shaderManager.register(GlassShader())
-        shaderManager.register(GlassBlurShader())
-        shaderManager.load()
-
-        fontManager.register("Inter-Regular-cut.ttf")         // 第一个注册的是默认字体（找不到指定字体时用它）
-        fontManager.register("Inter-Medium-cut.ttf")
-        fontManager.register("Inter-SemiBold-cut.ttf")
-        fontManager.register("InterDisplay-Bold-cut.ttf")
-        fontManager.load()
+                fontManager.register("Inter-Regular-cut.ttf")         // 第一个注册的是默认字体（找不到指定字体时用它）
+                fontManager.register("Inter-Medium-cut.ttf")
+                fontManager.register("Inter-SemiBold-cut.ttf")
+                fontManager.register("InterDisplay-Bold-cut.ttf")
+                registered = true
+            }
+            shaderManager.load()
+            fontManager.load()
+            // 只有全部成功才标记就绪：原来先置位再加载，一次失败就永久没有着色器 / 字体
+            glReady = true
+            failedOnce = false
+        } catch (t: Throwable) {
+            if (!failedOnce) {
+                failedOnce = true
+                me.sorihiko.dango.DangoLogger.error("Dango Music GL init failed, will retry: {}", t)
+            }
+        }
     }
 }
 

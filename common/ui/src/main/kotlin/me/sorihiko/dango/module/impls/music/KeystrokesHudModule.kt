@@ -13,7 +13,9 @@ import me.sorihiko.dango.module.Module
 import me.sorihiko.dango.module.ModuleMeta
 import me.sorihiko.dango.module.values.BooleanValue
 import me.sorihiko.dango.module.values.FloatValue
+import me.sorihiko.dango.module.values.IntValue
 import me.sorihiko.dango.module.values.ModuleValue
+import me.sorihiko.dango.ui.HudSnap
 import me.sorihiko.dango.ui.LayoutBounds
 import me.sorihiko.dango.ui.ShadowStyle
 import me.sorihiko.dango.ui.ShapeStyle
@@ -21,7 +23,9 @@ import me.sorihiko.dango.ui.Theme
 import me.sorihiko.dango.ui.Vec2
 import me.sorihiko.dango.utils.Color
 
+import kotlin.math.exp
 import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
  * 按键显示：W / A S D / 空格。
@@ -32,6 +36,9 @@ import kotlin.math.min
 @ModuleMeta(Category.MUSIC, "Keystrokes")
 class KeystrokesHudModule : Module() {
 
+    @ModuleValue("样式", "液态玻璃（本项目）/ 经典方格（Vibe）")
+    private val style = IntValue(0, STYLE_NAMES.size - 1, 0)
+
     @ModuleValue("液态玻璃", "液态玻璃背景；关闭后为纯黑面板")
     private val glass = BooleanValue(true)
 
@@ -41,6 +48,9 @@ class KeystrokesHudModule : Module() {
     @ModuleValue("隐藏键名", "只显示按键盒，不显示绑定的键名")
     private val unmarked = BooleanValue(false)
 
+    @ModuleValue("文字阴影", "键名加一层暗色阴影")
+    private val shadow = BooleanValue(true)
+
     @ModuleValue("缩放", "面板大小")
     private val scale = FloatValue(0.6f, 10f, 1f, 2)
 
@@ -49,6 +59,44 @@ class KeystrokesHudModule : Module() {
 
     @ModuleValue("Y 坐标", "垂直位置（打开聊天栏后可拖动）")
     private val posY = FloatValue(0f, 1f, 0.55f, 3)
+
+    // ---- 经典方格（Vibe）专用：默认值与原实现 OverlaySettings.Keystrokes 一致 ----
+
+    @ModuleValue("显示左键", "经典方格样式下显示 LMB")
+    private val leftClick = BooleanValue(true)
+
+    @ModuleValue("显示右键", "经典方格样式下显示 RMB")
+    private val rightClick = BooleanValue(true)
+
+    @ModuleValue("按下动画", "按下时颜色与底色的渐变过渡")
+    private val animate = BooleanValue(true)
+
+    @ModuleValue("动画速度", "按下 / 回弹的响应速度")
+    private val animSpeed = FloatValue(4f, 40f, 18f, 1)
+
+    @ModuleValue("按键尺寸", "经典方格样式的单键边长")
+    private val keySize = IntValue(18, 42, 24)
+
+    @ModuleValue("按键间距", "经典方格样式的键与键间距")
+    private val keyGap = IntValue(0, 8, 3)
+
+    @ModuleValue("文字缩放", "经典方格样式的键名大小")
+    private val textScale = FloatValue(0.6f, 1.5f, 1f, 2)
+
+    @ModuleValue("按下颜色", "按键按下时的高亮底色（#RRGGBB）")
+    private val pressedColor = IntValue(0, 0xFFFFFF, 0x79BFFF)
+
+    @ModuleValue("按下文字", "按键按下时的键名颜色（#RRGGBB）")
+    private val pressedTextColor = IntValue(0, 0xFFFFFF, 0xFFFFFF)
+
+    @ModuleValue("方格圆角", "经典方格样式的圆角半径")
+    private val cellRadius = FloatValue(0f, 16f, 6f, 1)
+
+    @ModuleValue("方格底色", "经典方格样式的底色（#RRGGBB）")
+    private val cellBackgroundColor = IntValue(0, 0xFFFFFF, 0x141B27)
+
+    @ModuleValue("方格透明度", "经典方格样式底色的不透明度")
+    private val cellAlpha = FloatValue(0f, 1f, 0.77f, 2)
 
     private val state = KeystrokesState(HudData.keys)
     private var context: GuiCanvas? = null
@@ -97,19 +145,24 @@ class KeystrokesHudModule : Module() {
 
     private fun width(s: String, size: Float): Float = mt.width(s, size, Theme.FONT_MEDIUM)
 
+    /** 关闭玻璃时的按键底 / 按下高亮（fill / edge 的透明度逐帧写，样式对象复用） */
+    private val keyDark = ShapeStyle(dark, 6f, 1f, border)
+    private val keyHiFill = ShapeStyle(fill, 6f)
+    private val keyHiEdge = ShapeStyle(clear, 6f, 1f, edge)
+
     private fun drawKey(ctx: GuiCanvas, key: Key, b: LayoutBounds, glassOn: Boolean) {
         val hi = state.highlight(key).coerceIn(0f, 1f)
         // 只有按键盒本身有液态玻璃（面板外围不再铺玻璃）
         if (glassOn) {
             ctx.drawGlass(b, keyGlass)
         } else {
-            ctx.drawShape(b, ShapeStyle(dark, 6f, 1f, border))
+            ctx.drawShape(b, keyDark)
         }
         if (hi > 0.02f) {
             fill.a = 0.22f * hi
-            ctx.drawShape(b, ShapeStyle(fill, 6f))
+            ctx.drawShape(b, keyHiFill)
             edge.a = hi
-            ctx.drawShape(b, ShapeStyle(clear, 6f, 1f, edge))
+            ctx.drawShape(b, keyHiEdge)
         }
         val label = state.label(key) ?: return
         val size = 8.5f
@@ -127,6 +180,10 @@ class KeystrokesHudModule : Module() {
         state.showSpace = showSpace.get()
         state.unmarked = unmarked.get()
         state.update()
+        if (style.value == 1) {
+            renderVibe()
+            return
+        }
 
         val platform = DangoClient.platform
         val uiScale = min(platform.windowWidth / 1280f, platform.windowHeight / 800f).coerceAtLeast(0.5f)
@@ -152,8 +209,14 @@ class KeystrokesHudModule : Module() {
                 dragDY = my - y
             }
             if (dragging) {
-                x = (mx - dragDX).coerceIn(0f, (lw - w).coerceAtLeast(0f))
-                y = (my - dragDY).coerceIn(0f, (lh - h).coerceAtLeast(0f))
+                val snap = HudSnap.snap(
+                    "keystrokes",
+                    (mx - dragDX).coerceIn(0f, (lw - w).coerceAtLeast(0f)),
+                    (my - dragDY).coerceIn(0f, (lh - h).coerceAtLeast(0f)),
+                    w, h, lw, lh,
+                )
+                x = snap.x
+                y = snap.y
                 posX.setValue(if (lw > w) x / (lw - w) else 0f)
                 posY.setValue(if (lh > h) y / (lh - h) else 0f)
             }
@@ -162,6 +225,7 @@ class KeystrokesHudModule : Module() {
         }
 
         val panel = LayoutBounds(x, y, w, h)
+        HudSnap.register("keystrokes", panel)
         val ctx = context ?: DangoClient.gfx.newCanvas().also { context = it }
         ctx.begin(glass.get(), mx.toInt(), my.toInt())
         try {
@@ -183,6 +247,7 @@ class KeystrokesHudModule : Module() {
                 drawKey(ctx, Key.JUMP, LayoutBounds(cx + 3f, row2 + box + gap, cw - 6f, box), glassOn)
             }
 
+            HudSnap.drawGuides(ctx)
             ctx.popTransform()
             mt.flush(k)
         } finally {
@@ -190,7 +255,187 @@ class KeystrokesHudModule : Module() {
         }
     }
 
+    // ------------------------------------------------------------ 经典方格（Vibe）
+
+    /** 7 个键（W / A S D / LMB RMB / Space）的按下插值，原实现的 press[] */
+    private val press = FloatArray(7)
+    private var lastFrameNanos = 0L
+
+    private class Placement(val panel: LayoutBounds, val k: Float, val mx: Float, val my: Float)
+
+    /** 计算缩放 / 位置并处理拖动，两种样式共用 */
+    private fun place(name: String, w: Float, h: Float): Placement {
+        val platform = DangoClient.platform
+        val uiScale = min(platform.windowWidth / 1280f, platform.windowHeight / 800f).coerceAtLeast(0.5f)
+        val k = uiScale * scale.value
+        val lw = platform.windowWidth / k
+        val lh = platform.windowHeight / k
+        val mx = platform.mouseX / k
+        val my = platform.mouseY / k
+
+        var x = posX.value * (lw - w)
+        var y = posY.value * (lh - h)
+        if (!platform.chatOpen) {
+            dragging = false
+        } else if (platform.isMouseDown(0)) {
+            if (!dragging && mx in x..(x + w) && my in y..(y + h)) {
+                dragging = true
+                dragDX = mx - x
+                dragDY = my - y
+            }
+            if (dragging) {
+                val snap = HudSnap.snap(
+                    name,
+                    (mx - dragDX).coerceIn(0f, (lw - w).coerceAtLeast(0f)),
+                    (my - dragDY).coerceIn(0f, (lh - h).coerceAtLeast(0f)),
+                    w, h, lw, lh,
+                )
+                x = snap.x
+                y = snap.y
+                posX.setValue(if (lw > w) x / (lw - w) else 0f)
+                posY.setValue(if (lh > h) y / (lh - h) else 0f)
+            }
+        } else {
+            dragging = false
+        }
+        HudSnap.register(name, LayoutBounds(x, y, w, h))
+        return Placement(LayoutBounds(x, y, w, h), k, mx, my)
+    }
+
+    private fun renderVibe() {
+        val size = keySize.value.toFloat()
+        val gap = keyGap.value.toFloat()
+        val showMouse = leftClick.get() || rightClick.get()
+        val rows = 2 + (if (showMouse) 1 else 0) + (if (showSpace.get()) 1 else 0)
+        val w = size * 3f + gap * 2f
+        val h = rows * size + (rows - 1) * gap
+
+        val p = place("keystrokes", w, h)
+        val panel = p.panel
+        val ctx = context ?: DangoClient.gfx.newCanvas().also { context = it }
+        ctx.begin(glass.get(), p.mx.toInt(), p.my.toInt())
+        try {
+            ctx.pushScale(p.k, p.k, 1f)
+            mt.clear()
+            mt.clip = panel
+
+            // 原实现：dt 封顶 0.1s，动画系数 1 - exp(-dt * speed)；关闭动画直接到位
+            val now = System.nanoTime()
+            val dt = if (lastFrameNanos == 0L) 1f else min(0.1f, (now - lastFrameNanos) / 1e9f)
+            lastFrameNanos = now
+            val t = if (animate.get()) 1f - exp(-dt * animSpeed.value) else 1f
+            val guiOpen = !DangoClient.platform.inGame
+            val mouseL = !guiOpen && DangoClient.platform.isMouseDown(0)
+            val mouseR = !guiOpen && DangoClient.platform.isMouseDown(1)
+            val down = booleanArrayOf(
+                !guiOpen && state.isDown(Key.FORWARD),
+                !guiOpen && state.isDown(Key.LEFT),
+                !guiOpen && state.isDown(Key.BACK),
+                !guiOpen && state.isDown(Key.RIGHT),
+                mouseL,
+                mouseR,
+                !guiOpen && state.isDown(Key.JUMP),
+            )
+            for (i in press.indices) press[i] += ((if (down[i]) 1f else 0f) - press[i]) * t
+
+            val x = panel.x
+            val y = panel.y
+            val labels = arrayOf(
+                state.label(Key.FORWARD) ?: "",
+                state.label(Key.LEFT) ?: "",
+                state.label(Key.BACK) ?: "",
+                state.label(Key.RIGHT) ?: "",
+                "LMB", "RMB",
+                state.label(Key.JUMP) ?: "Space",
+            )
+            if (unmarked.get()) for (i in 4..6) labels[i] = ""
+
+            val bgStyle = ShapeStyle(
+                Color(
+                    ((cellBackgroundColor.value shr 16) and 0xFF) / 255f,
+                    ((cellBackgroundColor.value shr 8) and 0xFF) / 255f,
+                    (cellBackgroundColor.value and 0xFF) / 255f,
+                    cellAlpha.value,
+                ),
+                min(cellRadius.value, size / 2f),
+                1f,
+                Color(1f, 1f, 1f, 0.06f),
+            )
+
+            drawVibeCell(ctx, LayoutBounds(x + size + gap, y, size, size), labels[0], press[0], bgStyle)
+            for (i in 1..3) {
+                drawVibeCell(
+                    ctx,
+                    LayoutBounds(x + (i - 1) * (size + gap), y + size + gap, size, size),
+                    labels[i], press[i], bgStyle,
+                )
+            }
+            var yy = y + 2f * (size + gap)
+            val l = leftClick.get()
+            val r = rightClick.get()
+            if (showMouse) {
+                val cw = if (l && r) (w - gap) / 2f else w
+                if (l) drawVibeCell(ctx, LayoutBounds(x, yy, cw, size), labels[4], press[4], bgStyle)
+                if (r) drawVibeCell(
+                    ctx,
+                    LayoutBounds(if (l) x + cw + gap else x, yy, if (l) w - cw - gap else w, size),
+                    labels[5], press[5], bgStyle,
+                )
+                yy += size + gap
+            }
+            if (showSpace.get()) {
+                drawVibeCell(ctx, LayoutBounds(x, yy, w, size), labels[6], press[6], bgStyle)
+            }
+
+            HudSnap.drawGuides(ctx)
+            ctx.popTransform()
+            mt.flush(p.k)
+        } finally {
+            ctx.end()
+        }
+    }
+
+    /** 单个方格：底色 + 按下高亮 + 居中键名，几何与配色照搬 Vibe 的 KeystrokesRenderer#cell */
+    private fun drawVibeCell(ctx: GuiCanvas, b: LayoutBounds, label: String, amount: Float, bg: ShapeStyle) {
+        if (glass.get()) {
+            ctx.drawGlass(b, keyGlass)
+        } else {
+            ctx.drawShape(b, bg)
+        }
+        if (amount > 0.001f) {
+            val hi = Color(
+                ((pressedColor.value shr 16) and 0xFF) / 255f,
+                ((pressedColor.value shr 8) and 0xFF) / 255f,
+                (pressedColor.value and 0xFF) / 255f,
+                amount,
+            )
+            ctx.drawShape(
+                LayoutBounds(b.x + 1f, b.y + 1f, b.width - 2f, b.height - 2f),
+                ShapeStyle(hi, min(cellRadius.value, (b.height - 2f) / 2f)),
+            )
+        }
+        if (label.isEmpty()) return
+        val base = b.height * 0.42f
+        val maxW = b.width - 6f
+        val labelW = mt.width(label, base, Theme.FONT_MEDIUM)
+        val fit = if (labelW > 0f) min(textScale.value, maxW / labelW) else textScale.value
+        val size = base * fit
+        val tw = mt.width(label, size, Theme.FONT_MEDIUM)
+        val color = Color(
+            (0.94f * (1f - amount) + ((pressedTextColor.value shr 16) and 0xFF) / 255f * amount),
+            (0.95f * (1f - amount) + ((pressedTextColor.value shr 8) and 0xFF) / 255f * amount),
+            (0.98f * (1f - amount) + (pressedTextColor.value and 0xFF) / 255f * amount),
+            1f,
+        )
+        if (shadow.get()) {
+            mt.text(ctx, label, b.x + (b.width - tw) / 2f + 0.8f, b.y + (b.height - size * 0.73f) / 2f + 0.8f, size, Color(0f, 0f, 0f, 0.5f), Theme.FONT_MEDIUM)
+        }
+        mt.text(ctx, label, b.x + (b.width - tw) / 2f, b.y + (b.height - size * 0.73f) / 2f, size, color, Theme.FONT_MEDIUM)
+    }
+
     companion object {
+        val STYLE_NAMES = arrayOf("液态玻璃", "经典方格")
+
         @Volatile
         private var instance: KeystrokesHudModule? = null
 

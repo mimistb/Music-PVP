@@ -4,6 +4,7 @@ import bedwarsstats.BedWarsStats
 import me.sorihiko.dango.DangoClient
 import me.sorihiko.dango.font.MixedText
 import me.sorihiko.dango.gfx.GuiCanvas
+import me.sorihiko.dango.hud.AntiCheatFlags
 import me.sorihiko.dango.hud.BedWarsData
 import me.sorihiko.dango.module.Category
 import me.sorihiko.dango.module.Module
@@ -74,15 +75,25 @@ class TabStatsHudModule : Module() {
     private val cInitial = ArrayList<String>()
     private val cLine = ArrayList<String>()
     private val cHasData = ArrayList<Boolean>()
+    /** 条目原始玩家名（未截断），用来查询反作弊标记 */
+    private val cRaw = ArrayList<String>()
 
     private val avatarFill = Color(1f, 1f, 1f, 0.07f)
     private val avatarRing = Color(1f, 1f, 1f, 0.10f)
     private val entryFill = Color(1f, 1f, 1f, 0.05f)
 
+    // 被反作弊标记的玩家：整行标红（背景微红 + 头像红环 + 名字红字）
+    private val flagFill = Color(1f, 0.27f, 0.23f, 0.14f)
+    private val flagRing = Color(1f, 0.27f, 0.23f, 0.50f)
+    private val flagName = Color(1f, 0.42f, 0.38f, 1f)
+    private val flagLine = Color(1f, 0.55f, 0.50f, 1f)
+
+    // BUG-01: 新模块默认打开要写在 defaultEnabled 里；在 init() 里写 enabled 会在
+    // 配置缺键时被 ConfigManager 的默认值覆盖，还会在监听器注册前丢开关事件。
+    override val defaultEnabled: Boolean get() = true
+
     override fun init() {
         instance = this
-        // 新模块默认打开（没有存档记录的用户按住 TAB 就能看到）；存档里有值时会被覆盖
-        enabled = true
     }
 
     private fun text(
@@ -156,6 +167,7 @@ class TabStatsHudModule : Module() {
         cInitial.clear()
         cLine.clear()
         cHasData.clear()
+        cRaw.clear()
         val s = scale.value
         val nameMaxW = (ENTRY_W - AVATAR - 12f) * s
         val lineMaxW = (ENTRY_W - AVATAR - 10f) * s
@@ -163,6 +175,7 @@ class TabStatsHudModule : Module() {
             val name = raw.trim()
             if (name.isEmpty()) continue
             val stats = BedWarsData.statsFor(name)
+            cRaw.add(name)
             cName.add(mt.trim(name, nameMaxW, NAME_SIZE * s, Theme.FONT_SEMIBOLD))
             cInitial.add(name.substring(0, 1).uppercase(Locale.ROOT))
             cLine.add(if (stats == null) "无数据" else mt.trim(statsLine(stats), lineMaxW, LINE_SIZE * s, Theme.FONT_MEDIUM))
@@ -249,25 +262,42 @@ class TabStatsHudModule : Module() {
     }
 
     private fun drawEntry(ctx: GuiCanvas, i: Int, ex: Float, ey: Float, s: Float) {
+        // 反作弊标记：整条数据标红，便于在名单里一眼认出
+        val flagged = i < cRaw.size && AntiCheatFlags.isFlagged(cRaw[i])
         // 条目底色：横向排开时更容易分辨每个玩家
-        ctx.drawShape(LayoutBounds(ex, ey, ENTRY_W * s, ENTRY_H * s), ShapeStyle(entryFill, 7f * s))
+        ctx.drawShape(
+            LayoutBounds(ex, ey, ENTRY_W * s, ENTRY_H * s),
+            ShapeStyle(if (flagged) flagFill else entryFill, 7f * s),
+        )
         val av = AVATAR * s
         val ax = ex + 6f * s
         val ay = ey + (ENTRY_H * s - av) * 0.5f
-        ctx.drawShape(LayoutBounds(ax, ay, av, av), ShapeStyle(avatarFill, av * 0.5f, 1f, avatarRing))
+        ctx.drawShape(
+            LayoutBounds(ax, ay, av, av),
+            ShapeStyle(avatarFill, av * 0.5f, 1f, if (flagged) flagRing else avatarRing),
+        )
         val initial = cInitial[i]
         text(
             ctx, initial, ax + (av - width(initial, 9f * s, Theme.FONT_SEMIBOLD)) * 0.5f,
-            ay + (av - 9f * s * 0.73f) * 0.5f, 9f * s, Theme.TEXT_SECONDARY, Theme.FONT_SEMIBOLD,
+            ay + (av - 9f * s * 0.73f) * 0.5f, 9f * s,
+            if (flagged) flagName else Theme.TEXT_SECONDARY, Theme.FONT_SEMIBOLD,
         )
 
         val tx = ax + av + 6f * s
-        text(ctx, cName[i], tx, ey + 3f * s, NAME_SIZE * s, Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD)
+        text(
+            ctx, cName[i], tx, ey + 3f * s, NAME_SIZE * s,
+            if (flagged) flagName else Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD,
+        )
         val line = cLine[i]
         if (line.isNotEmpty()) {
             text(
                 ctx, line, tx, ey + 14.5f * s, LINE_SIZE * s,
-                if (cHasData[i]) Theme.TEXT_SECONDARY else Theme.TEXT_TERTIARY, Theme.FONT_MEDIUM,
+                when {
+                    flagged -> flagLine
+                    cHasData[i] -> Theme.TEXT_SECONDARY
+                    else -> Theme.TEXT_TERTIARY
+                },
+                Theme.FONT_MEDIUM,
             )
         }
     }

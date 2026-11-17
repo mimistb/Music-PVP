@@ -28,6 +28,8 @@ public final class BedWarsStats {
     public final int winStreak;
     /** 网络等级（由 networkExp 换算）。 */
     public final int networkLevel;
+    /** SkyWars 星级（由 stats.SkyWars.skywars_experience 换算；0 = 没有数据）。 */
+    public final int skywarsStars;
     public final long updatedAtMillis;
 
     public BedWarsStats(String uuid, String displayName,
@@ -35,7 +37,7 @@ public final class BedWarsStats {
                         long finalKills, long finalDeaths,
                         long bedsBroken, long bedsLost,
                         int stars, int winStreak, int networkLevel,
-                        long updatedAtMillis) {
+                        int skywarsStars, long updatedAtMillis) {
         this.uuid = uuid == null ? "" : uuid;
         this.displayName = displayName == null ? "" : displayName;
         this.wins = wins;
@@ -47,11 +49,12 @@ public final class BedWarsStats {
         this.stars = stars;
         this.winStreak = winStreak;
         this.networkLevel = networkLevel;
+        this.skywarsStars = skywarsStars;
         this.updatedAtMillis = updatedAtMillis;
     }
 
     public static BedWarsStats empty() {
-        return new BedWarsStats("", "", 0L, 0L, 0L, 0L, 0L, 0L, 0, 0, 0, NO_TIMESTAMP);
+        return new BedWarsStats("", "", 0L, 0L, 0L, 0L, 0L, 0L, 0, 0, 0, 0, NO_TIMESTAMP);
     }
 
     /** 源码中的 winRate：wins / max(1, losses)。 */

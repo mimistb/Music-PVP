@@ -60,7 +60,40 @@ class MixedText {
         }
     }
 
+    /**
+     * 8 槽直接映射的宽度缓存。
+     *
+     * 同一段文字在一次排版里至少被量两遍（先算宽度摆位置、再在绘制时推进 pen），
+     * 而字体度量是热路径里最贵的纯 CPU 操作之一。这里用 identity 比较字符串 / 字体，
+     * 命中就直接返回：零分配、天然有界，串内容变了 identity 自然不同，不会读到脏值。
+     */
+    private val wText = arrayOfNulls<String>(8)
+    private val wSize = FloatArray(8)
+    private val wFont = arrayOfNulls<String>(8)
+    private val wValue = FloatArray(8)
+
+    /** 基准测试用计数：命中 / 未命中 */
+    var widthHits = 0
+        private set
+    var widthMisses = 0
+        private set
+
     fun width(s: String, size: Float, font: String = Theme.FONT_REGULAR): Float {
+        val slot = (System.identityHashCode(s) ushr 3) and 7
+        if (wText[slot] === s && wSize[slot] == size && wFont[slot] === font) {
+            widthHits++
+            return wValue[slot]
+        }
+        widthMisses++
+        val w = measure(s, size, font)
+        wText[slot] = s
+        wSize[slot] = size
+        wFont[slot] = font
+        wValue[slot] = w
+        return w
+    }
+
+    private fun measure(s: String, size: Float, font: String): Float {
         // 纯英文 / 数字：不用切段，直接量整串
         if (allLatin(s)) return Theme.textWidth(s, size, font)
         var w = 0f

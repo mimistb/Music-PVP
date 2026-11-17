@@ -18,8 +18,10 @@ import me.sorihiko.dango.utils.render.GlStateSnapshot
 
 import net.minecraft.client.gui.Gui
 import net.minecraft.client.gui.ScaledResolution
+import net.minecraft.client.renderer.vertex.DefaultVertexFormats
 import net.minecraft.client.renderer.GlStateManager
 import net.minecraft.client.renderer.OpenGlHelper
+import net.minecraft.client.renderer.Tessellator
 import net.minecraft.util.ResourceLocation
 import org.lwjgl.opengl.GL11
 import org.lwjgl.opengl.GL13
@@ -42,7 +44,7 @@ object LegacyGfx : Gfx {
     override fun headTexture(head: Any?): HeadTexture? {
         val loc = head as? ResourceLocation ?: return null
         var tex = this.headTex
-        if (tex == null || this.headLoc !== loc) {
+        if (tex == null || this.headLoc != loc) {
             tex = LegacyHeadTexture(loc)
             this.headLoc = loc
             this.headTex = tex
@@ -239,6 +241,30 @@ object LegacyWorld : WorldView {
         GlStateManager.depthMask(false)
     }
 
+    /**
+     * 成对还原 [begin] 改过的状态。
+     *
+     * 世界文字画在 RenderWorldLast，同一帧紧接着就是原版 renderHand（第一人称手部）：
+     * 深度测试关着、depthMask 为 false、光照与 lightmap 纹理单元被关掉的话，手部会
+     * 无深度排序、双面、无光照地画出来 —— 表现就是一块纯黑剪影。
+     */
+    override fun end() {
+        GlStateManager.depthMask(true)
+        GlStateManager.enableDepth()
+        GlStateManager.enableCull()
+        GlStateManager.enableLighting()
+        GlStateManager.enableFog()
+        GlStateManager.disableBlend()
+        GlStateManager.tryBlendFuncSeparate(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA, GL11.GL_ONE, GL11.GL_ZERO)
+        // prepareTextState() 关掉了 lightmap 那一层的贴图，这里必须打开：
+        // 物品 / 手部的亮度靠 GL_TEXTURE1 的 lightmap 采样
+        GlStateManager.setActiveTexture(OpenGlHelper.lightmapTexUnit)
+        GlStateManager.enableTexture2D()
+        GlStateManager.setActiveTexture(OpenGlHelper.defaultTexUnit)
+        GlStateManager.enableTexture2D()
+        LegacyGfx.resetColorAndTexture()
+    }
+
     override fun push(rx: Double, ry: Double, rz: Double, yaw: Float, pitch: Float, scale: Float) {
         GL11.glPushMatrix()
         GL11.glTranslated(rx, ry, rz)
@@ -260,7 +286,50 @@ object LegacyWorld : WorldView {
 // ---------------------------------------------------------------- 左上角 HUD
 
 object LegacyHud : HudCanvas {
+    /**
+     * 矩形绘制批次。
+     *
+     * 原实现每个矩形都走一次 `Gui.drawRect`：内部各自 begin/draw 一次 Tessellator，
+     * 期间反复开关混合、纹理，HUD 一帧几十个矩形就是几十次状态切换 + 几十次 draw call。
+     * 这里把同一帧的矩形攒进缓冲，在需要切换绘制类型（文字 / 纹理）或帧结束时一次性提交，
+     * 绘制顺序与颜色完全不变，因此画面无差异；只有「完全不透明且完全重合」的矩形会被去重
+     * （不透明重复绘制是幂等的），半透明矩形一律保留，避免叠加浓度变化。
+     */
+    private const val QUADS = 7
+    /**
+     * 扁平矩形批次：每个矩形占 5 个 int（x1,y1,x2,y2,argb）。
+     * 原实现是 `ArrayList<IntArray>`，HUD 一帧几十个矩形就是几十个小数组 + 一次扩容。
+     */
+    private var rects = IntArray(5 * 128)
+    private var rectCount = 0
+
+    /**
+     * 「不透明矩形」去重表：开放寻址的原始类型表，key → argb。
+     * 原来是 `HashMap<Long, Int>`，每次 put 都会把 Long / Int 装箱。
+     * 坐标全 0 的矩形在 [rect] 里就被 x1 == x2 拦掉了，所以 key = 0 可以安全地当空槽。
+     */
+    private var seenKeys = LongArray(512)
+    private var seenValues = IntArray(512)
+    private var seenUsed = 0
+
+    /** 上一帧的统计，供自检 / 调试读取 */
+    @JvmStatic
+    var lastFrameRects = 0
+        private set
+    @JvmStatic
+    var lastFrameDrawn = 0
+        private set
+    @JvmStatic
+    var lastFrameMerged = 0
+        private set
+
+    /** begin() 时的开关快照，end() 原样还原 */
+    private var caps: GlCaps.Saved? = null
+
     override fun begin() {
+        // 先记下进去前的开关：begin() 会关深度、改贴图单元，end() 必须原样还原，
+        // 否则 HUD 画完之后的状态会漏给 GUI / 下一帧的世界渲染
+        caps = GlCaps.save()
         val sr = ScaledResolution(mc)
         GL11.glMatrixMode(GL11.GL_PROJECTION)
         GL11.glPushMatrix()
@@ -272,29 +341,135 @@ object LegacyHud : HudCanvas {
         GL11.glTranslatef(0f, 0f, -2000f)
         LegacyGfx.prepareTextState()
         GlStateManager.disableDepth()
+        rectCount = 0
+        clearSeen()
+        lastFrameRects = 0
+        lastFrameDrawn = 0
+        lastFrameMerged = 0
     }
 
     override fun end() {
+        flushRects()
         GL11.glMatrixMode(GL11.GL_PROJECTION)
         GL11.glPopMatrix()
         GL11.glMatrixMode(GL11.GL_MODELVIEW)
         GL11.glPopMatrix()
+        caps?.let { GlCaps.restore(it) }
+        caps = null
     }
 
-    override fun rect(x1: Int, y1: Int, x2: Int, y2: Int, argb: Int) = Gui.drawRect(x1, y1, x2, y2, argb)
+    override fun rect(x1: Int, y1: Int, x2: Int, y2: Int, argb: Int) {
+        if (x1 == x2 || y1 == y2) return
+        lastFrameRects++
+        if ((argb ushr 24) == 0xFF) {
+            val key = packKey(x1, y1, x2, y2)
+            val prev = seenPut(key, argb)
+            if (prev == argb) {
+                lastFrameMerged++
+                return
+            }
+        }
+        addRect(x1, y1, x2, y2, argb)
+    }
+
+    private fun addRect(x1: Int, y1: Int, x2: Int, y2: Int, argb: Int) {
+        val need = (rectCount + 1) * 5
+        if (need > rects.size) rects = rects.copyOf(maxOf(need, rects.size * 2))
+        val o = rectCount * 5
+        rects[o] = x1
+        rects[o + 1] = y1
+        rects[o + 2] = x2
+        rects[o + 3] = y2
+        rects[o + 4] = argb
+        rectCount++
+    }
+
+    /** 返回之前记录的 argb；0 表示这个 key 还没出现过（不透明色的 argb 不可能是 0） */
+    private fun seenPut(key: Long, argb: Int): Int {
+        // 装载因子到 3/4 就直接清空：去重只是省绘制，清掉不影响正确性，也避免 rehash 逻辑
+        if (seenUsed * 4 >= seenKeys.size * 3) clearSeen()
+        var i = (((key xor (key ushr 32)).toInt()) * -1640531535) and (seenKeys.size - 1)
+        while (true) {
+            val k = seenKeys[i]
+            if (k == 0L) {
+                seenKeys[i] = key
+                seenValues[i] = argb
+                seenUsed++
+                return 0
+            }
+            if (k == key) {
+                val prev = seenValues[i]
+                seenValues[i] = argb
+                return prev
+            }
+            i = (i + 1) and (seenKeys.size - 1)
+        }
+    }
+
+    private fun clearSeen() {
+        if (seenUsed == 0) return
+        java.util.Arrays.fill(seenKeys, 0L)
+        seenUsed = 0
+    }
+
+    /** 坐标打包成 64 位键（HUD 坐标远小于 65536，不会溢出） */
+    private fun packKey(x1: Int, y1: Int, x2: Int, y2: Int): Long =
+        (x1.toLong() shl 48) or
+            ((y1.toLong() and 0xFFFFL) shl 32) or
+            ((x2.toLong() and 0xFFFFL) shl 16) or
+            (y2.toLong() and 0xFFFFL)
+
+    private fun flushRects() {
+        if (rectCount == 0) return
+        GlStateManager.enableBlend()
+        GlStateManager.disableTexture2D()
+        GlStateManager.tryBlendFuncSeparate(770, 771, 1, 0)
+        val tessellator = Tessellator.getInstance()
+        val w = tessellator.worldRenderer
+        w.begin(QUADS, DefaultVertexFormats.POSITION_COLOR)
+        for (i in 0 until rectCount) {
+            val o = i * 5
+            var l = rects[o]
+            var t = rects[o + 1]
+            var rt = rects[o + 2]
+            var b = rects[o + 3]
+            // 与 Gui.drawRect 相同的上下左右归一化
+            if (l > rt) { val s = l; l = rt; rt = s }
+            if (t > b) { val s = t; t = b; b = s }
+            val argb = rects[o + 4]
+            val a = (argb ushr 24 and 0xFF) / 255f
+            val red = (argb ushr 16 and 0xFF) / 255f
+            val g = (argb ushr 8 and 0xFF) / 255f
+            val bl = (argb and 0xFF) / 255f
+            w.pos(rt.toDouble(), b.toDouble(), 0.0).color(red, g, bl, a).endVertex()
+            w.pos(l.toDouble(), b.toDouble(), 0.0).color(red, g, bl, a).endVertex()
+            w.pos(l.toDouble(), t.toDouble(), 0.0).color(red, g, bl, a).endVertex()
+            w.pos(rt.toDouble(), t.toDouble(), 0.0).color(red, g, bl, a).endVertex()
+        }
+        tessellator.draw()
+        // 对齐原版 Gui.drawRect 的收尾：批次化之后这两步丢了，后续 HUD 文字 / 贴图
+        // 会沿用「纹理关闭 + 混合开启」的状态，表现为背景 / 文字绘制异常
+        GlStateManager.disableBlend()
+        GlStateManager.enableTexture2D()
+        lastFrameDrawn += rectCount
+        rectCount = 0
+        clearSeen()
+    }
 
     override fun texture(texture: Texture, x: Int, y: Int, width: Int, height: Int, alpha: Float) {
+        flushRects()
         GlStateManager.enableTexture2D()
         GlStateManager.enableBlend()
-        mc.textureManager.bindTexture((texture as LegacyTexture).location)
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR)
-        GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR)
+        // 交给 LegacyTexture 自己决定过滤方式：这里是全项目唯一一处无条件把贴图改成
+        // GL_LINEAR 的地方，玩家皮肤一旦走这里就会被永久改成双线性 → 世界里整个人糊掉。
+        (texture as LegacyTexture).bind()
         GlStateManager.color(1f, 1f, 1f, alpha)
         Gui.drawModalRectWithCustomSizedTexture(x, y, 0f, 0f, width, height, width.toFloat(), height.toFloat())
         GlStateManager.color(1f, 1f, 1f, 1f)
     }
 
     override fun text(text: String, x: Float, y: Float, argb: Int, shadow: Boolean) {
+        flushRects()
         // Gui.drawRect 画完会关掉混合，文字前重新打开
         GlStateManager.enableTexture2D()
         GlStateManager.enableBlend()

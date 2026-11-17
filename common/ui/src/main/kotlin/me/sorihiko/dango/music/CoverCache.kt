@@ -2,11 +2,13 @@ package me.sorihiko.dango.music
 
 import me.sorihiko.dango.DangoClient
 import me.sorihiko.dango.DangoLogger
+import me.sorihiko.dango.cache.MediaCache
 import me.sorihiko.dango.gfx.Texture
 
 import java.awt.RenderingHints
 import java.awt.image.BufferedImage
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.LinkedBlockingDeque
@@ -44,6 +46,13 @@ object CoverCache {
         },
     ) { r -> Thread(r, "Dango-CoverCache").apply { isDaemon = true } }
 
+    /**
+     * 磁盘缓存：存的是已经降采样到档位的正方形缩略图（PNG），不是原图。
+     * 下次开游戏 / 纹理被 LRU 淘汰后重进歌单，都不用再走一次网络。
+     */
+    private const val DISK_TTL_MS = 30L * 24 * 60 * 60 * 1000
+    private val diskWrites = AtomicInteger()
+
     private val requested = ConcurrentHashMap.newKeySet<String>()
     /** 下载失败的时间：过一会儿再重试（以前失败一次就再也不试了，封面会一直空着） */
     private val failedAt = ConcurrentHashMap<String, Long>()
@@ -60,7 +69,7 @@ object CoverCache {
     private val sources = object : LinkedHashMap<String, BufferedImage>(16, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, BufferedImage>) = size > MAX_SOURCES
     }
-    private val roundQueued = HashSet<String>()
+    private val roundQueued = ConcurrentHashMap.newKeySet<String>()
 
     /** 上传队列版本号：只有新图片进队才 +1，每帧的 [upload] 版本没变就直接跳过 */
     private val uploadVersion = AtomicInteger(0)
@@ -82,6 +91,11 @@ object CoverCache {
             val tex = DangoClient.gfx.textures.upload("dango_cover_c", img)
             textures.put(key, tex)?.let { DangoClient.gfx.textures.delete(it) }
             lastUsed[key] = now
+            // 纹理已经到位，把"在途请求"标记还回去：
+            // 否则这张封面被 LRU 淘汰后 get() 会在 requested.add() 处直接返回 null，
+            // 永远拿不回来（requested 也会随浏览过的封面无界增长）。
+            requested.remove(key)
+            roundQueued.remove(key)
             if (ROUND_SUFFIX !in key) sources[key] = img
         }
         // 最久没画的排在最前面；它要是最近还在画，说明全都在用，先不删（下一帧再看）
@@ -96,19 +110,24 @@ object CoverCache {
         }
     }
 
-    /** 取封面；还没有就去下载，先返回 null（画占位） */
-    fun get(key: String, url: String): Texture? {
-        textures[key]?.let {
-            lastUsed[key] = now
+    /** 取封面；还没有就去下载，先返回 null（画占位）。[size] 只取 64 / 128 / 256 三档，避免下载过多尺寸 */
+    fun get(key: String, url: String, size: Int = 128): Texture? {
+        // now 只在 upload() 里刷新，但 get() 可能在同一帧更早被调用：
+        // 用上一次刷新留下的旧时间会让"刚画过"的封面被误判成很久没用而删掉
+        now = System.currentTimeMillis()
+        val tier = tierOf(size)
+        val k = tieredKey(key, tier)
+        textures[k]?.let {
+            lastUsed[k] = now
             return it
         }
         if (url.isEmpty()) return null
-        val failed = failedAt[key]
+        val failed = failedAt[k]
         if (failed != null && System.currentTimeMillis() - failed < RETRY_MS) return null
-        if (!requested.add(key)) return null
+        if (!requested.add(k)) return null
         // 以前下载过、只是纹理被删了：直接拿内存里的图重新上传（下一帧就有）
-        sources[key]?.let {
-            ready.add(key to it)
+        sources[k]?.let {
+            ready.add(k to it)
             uploadVersion.incrementAndGet()
             return null
         }
@@ -116,40 +135,84 @@ object CoverCache {
             var ok = false
             var why = ""
             try {
-                val full = if ("?" in url) url else "$url?param=200y200"
-                val bytes = NeteaseApi.request(full, "image/jpeg,image/png,image/*;q=0.8")
-                if (bytes == null) {
-                    why = "download failed"
-                } else {
-                    val img = ImageIO.read(ByteArrayInputStream(bytes))
-                    if (img == null) {
-                        why = "unreadable image (${bytes.size} bytes)"
-                    } else {
-                        ready.add(key to square(img, 128))
+                // 先看磁盘（缩略图直接可用，省掉一次下载 + 解码 + 缩放）
+                val cached = MediaCache.readBytes("cover", k, DISK_TTL_MS)
+                if (cached != null) {
+                    val img = ImageIO.read(ByteArrayInputStream(cached))
+                    if (img != null) {
+                        ready.add(k to img)
                         uploadVersion.incrementAndGet()
-                        failedAt.remove(key)
+                        failedAt.remove(k)
+                        MediaCache.touch("cover", k)
                         ok = true
+                    } else {
+                        // 文件损坏 / 被截断：删掉，继续走网络
+                        MediaCache.delete("cover", k)
+                    }
+                }
+                if (!ok) {
+                    val full = if ("?" in url) url else "$url?param=${tier}y${tier}"
+                    val bytes = NeteaseApi.request(full, "image/jpeg,image/png,image/*;q=0.8")
+                    if (bytes == null) {
+                        why = "download failed"
+                    } else {
+                        val img = ImageIO.read(ByteArrayInputStream(bytes))
+                        if (img == null) {
+                            why = "unreadable image (${bytes.size} bytes)"
+                        } else {
+                            val thumb = square(img, tier)
+                            ready.add(k to thumb)
+                            uploadVersion.incrementAndGet()
+                            failedAt.remove(k)
+                            ok = true
+                            saveToDisk(k, thumb)
+                        }
                     }
                 }
             } catch (e: Throwable) {
                 why = e.toString()
             } finally {
                 if (!ok) {
-                    requested.remove(key)
-                    failedAt[key] = System.currentTimeMillis()
-                    if (failLogs.incrementAndGet() <= 20) DangoLogger.warn("Cover {} failed: {} ({})", key, why, url)
+                    requested.remove(k)
+                    // 失败记录按 key 累积，长期运行要设个上限，否则会一直涨
+                    if (failedAt.size > 512) failedAt.clear()
+                    failedAt[k] = System.currentTimeMillis()
+                    if (failLogs.incrementAndGet() <= 20) DangoLogger.warn("Cover {} failed: {} ({})", k, why, url)
                 }
             }
         }
         return null
     }
 
-    fun track(t: NeteaseTrack) = get("t:${t.id}", t.coverUrl)
+    /** 把降采样后的缩略图写进磁盘缓存（PNG，无损且体积可控） */
+    private fun saveToDisk(key: String, img: BufferedImage) {
+        try {
+            val out = ByteArrayOutputStream()
+            ImageIO.write(img, "png", out)
+            MediaCache.writeBytes("cover", key, out.toByteArray())
+            diskWrites.incrementAndGet()
+        } catch (_: Throwable) {
+            // 写盘失败不影响显示：纹理已经进队列了
+        }
+    }
+
+    /** 封面尺寸按 64 / 128 / 256 三档取整 */
+    private fun tierOf(size: Int): Int = when {
+        size <= 64 -> 64
+        size <= 128 -> 128
+        else -> 256
+    }
+
+    /** 128 档沿用旧键名，64 / 256 加后缀，互不覆盖 */
+    private fun tieredKey(key: String, tier: Int): String = if (tier == 128) key else "$key@$tier"
+
+    fun track(t: NeteaseTrack, size: Int = 128) = get("t:${t.id}", t.coverUrl, size)
 
     private const val ROUND_SUFFIX = "#r"
 
     /** 圆角版封面（渲染线程调用）：原图下好后再生成一张四角透明的纹理。ratio = 圆角半径 / 边长 */
     fun rounded(key: String, url: String, ratio: Float = ROUND): Texture? {
+        now = System.currentTimeMillis()
         val rk = key + ROUND_SUFFIX + (ratio * 100).toInt()
         textures[rk]?.let {
             lastUsed[rk] = now
@@ -162,7 +225,9 @@ object CoverCache {
                 try {
                     ready.add(rk to roundCorners(src, ratio))
                     uploadVersion.incrementAndGet()
-                } catch (_: Exception) {
+                } catch (_: Throwable) {
+                    // 生成失败就把占位清掉，下一帧还能重新排队；否则这张封面永远没有圆角版
+                    roundQueued.remove(rk)
                 }
             }
         }
@@ -193,7 +258,7 @@ object CoverCache {
         }
         return out
     }
-    fun playlist(p: NeteasePlaylist) = get("p:${p.id}", p.coverUrl)
+    fun playlist(p: NeteasePlaylist, size: Int = 128) = get("p:${p.provider}:${p.id}", p.coverUrl, size)
 
     private fun square(src: BufferedImage, size: Int): BufferedImage {
         val side = min(src.width, src.height)

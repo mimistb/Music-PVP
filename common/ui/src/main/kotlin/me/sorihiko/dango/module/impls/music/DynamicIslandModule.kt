@@ -19,6 +19,8 @@ import me.sorihiko.dango.music.CoverCache
 import me.sorihiko.dango.music.MusicPlayer
 import me.sorihiko.dango.platform.Keys
 import me.sorihiko.dango.lyrics.LyricLine
+import me.sorihiko.dango.ui.GlassStyle
+import me.sorihiko.dango.ui.HudSnap
 import me.sorihiko.dango.ui.LayoutBounds
 import me.sorihiko.dango.ui.ShadowStyle
 import me.sorihiko.dango.ui.ShapeStyle
@@ -109,6 +111,42 @@ class DynamicIslandModule : Module() {
     /** 换句时的淡入进度（0→1），让切到下一句时平滑出现 */
     private var lineAlpha = 1f
     private var lastLineText: String? = null
+
+    /** 胶囊半径随高度变，按 0.5px 粒度缓存玻璃 / 纯黑样式，避免每帧 copy */
+    private val pillGlassCache = arrayOfNulls<GlassStyle>(48)
+    private val pillDarkCache = arrayOfNulls<ShapeStyle>(48)
+    private val pillShadow = ShadowStyle(Color(0f, 0f, 0f, 0.14f), 8f, Vec2(0f, -2f))
+    private val pillDarkShadow = ShadowStyle(Color(0f, 0f, 0f, 0.18f), 8f, Vec2(0f, -2f))
+
+    private fun pillRadiusIndex(radius: Float): Int = (radius * 2f).toInt().coerceIn(0, 47)
+
+    /** 进度条 / 跳动的音浪 / 封面占位：样式固定，复用避免每帧分配 */
+    private val progressTrack = ShapeStyle(Theme.TRACK, 1.5f)
+    private val progressFill = ShapeStyle(Theme.TEXT_PRIMARY, 1.5f)
+    private val barsPlaying = ShapeStyle(Theme.TEXT_PRIMARY, 1.1f)
+    private val barsIdle = ShapeStyle(Theme.TEXT_TERTIARY, 1.1f)
+    private val coverPlaceholders = arrayOfNulls<ShapeStyle>(48)
+
+    private fun panelGlassFor(radius: Float): GlassStyle {
+        val idx = pillRadiusIndex(radius)
+        val cached = pillGlassCache[idx]
+        if (cached != null) return cached
+        val style = Theme.GLASS_WINDOW.copy(radius = idx * 0.5f, shadow = pillShadow)
+        pillGlassCache[idx] = style
+        return style
+    }
+
+    private fun panelDarkFor(radius: Float): ShapeStyle {
+        val idx = pillRadiusIndex(radius)
+        val cached = pillDarkCache[idx]
+        if (cached != null) return cached
+        val style = ShapeStyle(
+            Color(0.02f, 0.02f, 0.03f, 0.9f), idx * 0.5f, 1f, Color(1f, 1f, 1f, 0.07f),
+            pillDarkShadow,
+        )
+        pillDarkCache[idx] = style
+        return style
+    }
 
     /** 打开聊天栏后可以直接拖动灵动岛，位置写进组件位置模块 */
     private var dragging = false
@@ -415,11 +453,14 @@ class DynamicIslandModule : Module() {
                             dragDY = my - pill.y
                         }
                         if (dragging) {
-                            layout.islandX.setValue(mx - dragDX - baseX)
-                            layout.islandY.setValue(my - dragDY - top)
+                            val snap = HudSnap.snap(
+                                "island", mx - dragDX, my - dragDY, w, h, lw, lh,
+                            )
+                            layout.islandX.setValue(snap.x - baseX)
+                            layout.islandY.setValue(snap.y - top)
                             pill = LayoutBounds(
-                                baseX + layout.islandX.value,
-                                top + layout.islandY.value,
+                                snap.x,
+                                snap.y,
                                 w, h,
                             )
                         }
@@ -428,26 +469,23 @@ class DynamicIslandModule : Module() {
                     }
                 }
             }
-            if (tabList) {
-                // 横向 TAB 列表很宽 / 很高：按住 TAB 时把胶囊收进屏幕，避免越界遮挡
-                pill = LayoutBounds(
-                    pill.x.coerceIn(4f, (lw - w - 4f).coerceAtLeast(4f)),
-                    pill.y.coerceIn(4f, (lh - h - 4f).coerceAtLeast(4f)),
-                    w, h,
-                )
-            }
+            // 胶囊始终收进屏幕：拖动偏移可到 ±400 / ±300，弹簧还会过冲，
+            // 一旦越界 scissor 与玻璃采样都会落到窗口外（内容消失或采到黑边）
+            pill = LayoutBounds(
+                pill.x.coerceIn(4f, (lw - w - 4f).coerceAtLeast(4f)),
+                pill.y.coerceIn(4f, (lh - h - 4f).coerceAtLeast(4f)),
+                w, h,
+            )
             val r = min(h / 2f, 22f)
+            HudSnap.register("island", pill)
 
             ctx.pushScale(k, k, 1f)
             if (glass.get()) {
-                ctx.drawGlass(pill, Theme.GLASS_WINDOW.copy(radius = r, shadow = ShadowStyle(Color(0f, 0f, 0f, 0.14f), 8f, Vec2(0f, -2f))))
+                ctx.drawGlass(pill, panelGlassFor(r))
             } else {
                 ctx.drawShape(
                     pill,
-                    ShapeStyle(
-                        Color(0.02f, 0.02f, 0.03f, 0.9f), r, 1f, Color(1f, 1f, 1f, 0.07f),
-                        ShadowStyle(Color(0f, 0f, 0f, 0.18f), 8f, Vec2(0f, -2f)),
-                    )
+                    panelDarkFor(r),
                 )
             }
 
@@ -489,6 +527,7 @@ class DynamicIslandModule : Module() {
                 Kind.SONG -> drawSong(ctx, cb)
             }
             ctx.popOpacity()
+            HudSnap.drawGuides(ctx)
             ctx.popTransform()
             mt.flush(k)
             ctx.noScissor()
@@ -578,18 +617,27 @@ class DynamicIslandModule : Module() {
         text(ctx, trim(t.artists.joinToString(" / "), tw, 11f), tx, b.y + 42f, 11f, Theme.TEXT_SECONDARY)
 
         val bar = LayoutBounds(tx, b.y + 60f, tw, 3f)
-        ctx.drawShape(bar, ShapeStyle(Theme.TRACK, 1.5f))
+        ctx.drawShape(bar, progressTrack)
         val dur = MusicPlayer.durationMs
         if (dur > 0) {
             val f = (MusicPlayer.positionMs.toDouble() / dur).coerceIn(0.0, 1.0).toFloat()
-            ctx.drawShape(LayoutBounds(bar.x, bar.y, max(3f, bar.width * f), bar.height), ShapeStyle(Theme.TEXT_PRIMARY, 1.5f))
+            ctx.drawShape(LayoutBounds(bar.x, bar.y, max(3f, bar.width * f), bar.height), progressFill)
         }
     }
 
     private fun drawCover(ctx: GuiCanvas, b: LayoutBounds, tex: Texture?) {
         CoverCache.upload()
         if (tex != null) ctx.drawImage(b, tex)
-        else ctx.drawShape(b, ShapeStyle(Theme.TRACK, b.width * 0.2f))
+        else ctx.drawShape(b, coverPlaceholder(b.width * 0.2f))
+    }
+
+    private fun coverPlaceholder(radius: Float): ShapeStyle {
+        val idx = pillRadiusIndex(radius)
+        val cached = coverPlaceholders[idx]
+        if (cached != null) return cached
+        val style = ShapeStyle(Theme.TRACK, idx * 0.5f)
+        coverPlaceholders[idx] = style
+        return style
     }
 
     /** 跳动的音浪：3 根小柱子，底部对齐 yBottom */
@@ -601,7 +649,7 @@ class DynamicIslandModule : Module() {
             else 3f
             ctx.drawShape(
                 LayoutBounds(x + i * 3.6f, yBottom - hh, 2.2f, hh),
-                ShapeStyle(if (playing) Theme.TEXT_PRIMARY else Theme.TEXT_TERTIARY, 1.1f),
+                if (playing) barsPlaying else barsIdle,
             )
         }
     }

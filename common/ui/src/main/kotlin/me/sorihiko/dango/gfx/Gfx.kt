@@ -152,6 +152,14 @@ interface WorldView {
     fun begin()
 
     /**
+     * 结束世界文字绘制，把 [begin] 打开/关掉的渲染状态成对还原。
+     *
+     * 世界文字画在 RenderWorldLast，同帧紧接着就是原版的第一人称手部（renderHand），
+     * 深度 / 光照 / 贴图单元留成「文字态」会让手部丢遮挡、丢光照。
+     */
+    fun end() {}
+
+    /**
      * 移到镜头相对坐标 (rx, ry, rz)，先绕 Y 轴转 -yaw、再绕 X 轴转 pitch（角度），
      * 然后缩放成文字坐标（x 向右、y 向下）。之后用 [TextCanvas] 画，最后 [pop]。
      */

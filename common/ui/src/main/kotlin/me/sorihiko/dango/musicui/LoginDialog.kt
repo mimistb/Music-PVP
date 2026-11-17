@@ -78,7 +78,7 @@ internal class LoginDialog(private val screen: MusicScreen) {
         if (active != null && active.state == LoginState.SUCCESS && !successSeen) {
             successSeen = true
             LoginAccounts.setActivePlatform(active.id)
-            if (active.id == "netease") Library.refreshAll()
+            if (active.id == "netease") Library.refreshAll() else Library.onPlatformChanged()
             close()
             return
         }
@@ -136,6 +136,7 @@ internal class LoginDialog(private val screen: MusicScreen) {
         // 已登录平台直接切为当前平台，复用本地令牌，不重新扫码
         if (p.accountName.isNotEmpty()) {
             LoginAccounts.setActivePlatform(id)
+            Library.onPlatformChanged()
             return
         }
         p.start()
@@ -210,8 +211,16 @@ internal class LoginDialog(private val screen: MusicScreen) {
         }
         if (detail.isNotEmpty()) {
             ty += 4f
-            for (line in ui.wrap2(detail, w - 44f, 10f)) {
-                ui.text(line, box.x + (w - ui.width(line, 10f)) / 2f, ty, 10f, Theme.TEXT_TERTIARY)
+            // 底部按钮从 box.bottom - 56f 起，长文案必须在它上方收住，超出部分截断
+            val maxLines = (((box.bottom - 62f) - ty) / 14f).toInt().coerceAtLeast(0)
+            val lines = ui.wrap2(detail, w - 44f, 10f)
+            val shownLines = if (lines.size <= maxLines) lines else lines.take(maxLines)
+            for ((i, line) in shownLines.withIndex()) {
+                val cut = shownLines.size < lines.size && i == shownLines.lastIndex
+                val shown = if (cut) {
+                    ui.trim(line, w - 44f - ui.width("…", 10f), 10f) + "…"
+                } else line
+                ui.text(shown, box.x + (w - ui.width(shown, 10f)) / 2f, ty, 10f, Theme.TEXT_TERTIARY)
                 ty += 14f
             }
         }
@@ -326,7 +335,7 @@ internal class LoginDialog(private val screen: MusicScreen) {
         }
         ui.ctx.drawShape(b, ShapeStyle(col, b.height / 2f))
         ui.text(label, b.x + (b.width - ui.width(label, 12f, Theme.FONT_SEMIBOLD)) / 2f,
-            b.y + b.height / 2f - 12f * 0.39f - 0.5f, 12f, Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD)
+            Theme.textCenterY(b.y + b.height / 2f, 12f), 12f, Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD)
         hits += b to {
             ui.markPress(b)
             action()

@@ -37,9 +37,10 @@ class AutoLyricsModule : Module() {
     @ModuleValue("时长容差", "搜索结果与当前歌曲时长相差超过这个秒数就放弃")
     private val durationToleranceSec = IntValue(1, 60, 8)
 
-    /** 旧配置文件里没有这一项时也默认打开；配置里存过的开关状态会在启动后覆盖这里 */
+    /** 旧配置文件里没有这一项时也默认打开；配置里存过的开关状态会在启动后覆盖 */
+    override val defaultEnabled: Boolean get() = true
+
     override fun init() {
-        enabled = true
         try {
             Files.createDirectories(lyricsDir())
         } catch (e: Exception) {
@@ -186,7 +187,8 @@ class AutoLyricsModule : Module() {
         if (title.isEmpty()) return null
         val exact = title == wantTitle
         // 只靠"互相包含"匹配时，单字标题太容易误中（比如 "雨" 命中 "雨下一整晚"）
-        val contains = title.length >= 2 && wantTitle.isNotEmpty() &&
+        // BUG-07: 查询侧也要长度保护，否则单字歌名照样走包含匹配。
+        val contains = title.length >= 2 && wantTitle.length >= 2 &&
             (title.contains(wantTitle) || wantTitle.contains(title))
         if (!exact && !contains) return null
         val artists = cand.artists.map { norm(it) }.filter { it.isNotEmpty() }

@@ -27,9 +27,10 @@ internal class PlayerBar(private val screen: MusicScreen, private val module: Ne
         // 左：封面 + 歌名 / 歌手
         val cs = 48f
         val coverBox = LayoutBounds(bar.x + 13f, bar.y + (bar.height - cs) / 2f, cs, cs)
-        ui.drawCover(coverBox, t?.let { CoverCache.track(it) }, 8f)
+        ui.drawCover(coverBox, t?.let { CoverCache.track(it, 64) }, 8f)
         val infoX = coverBox.right + 12f
-        val infoW = 220f
+        // 标题列最大 220；窗口很窄时按"到中间控制区左缘为止"收窄，避免歌名压到上一首按钮
+        val infoW = min(220f, (bar.width / 2f - 157f).coerceAtLeast(80f))
         val title = t?.name ?: "未在播放"
         ui.text(ui.trim(title, infoW, 14f, Theme.FONT_SEMIBOLD), infoX, coverBox.y + 9f, 14f, Theme.TEXT_PRIMARY, Theme.FONT_SEMIBOLD)
         val sub = when {
@@ -105,7 +106,11 @@ internal class PlayerBar(private val screen: MusicScreen, private val module: Ne
         ctx.drawShape(LayoutBounds(knobX - 5f, volRect.y - 3f, 10f, 10f), ShapeStyle(Theme.TEXT_PRIMARY, 5f))
 
         val shuffleLabel = "随机播放"
-        val sw = ui.width(shuffleLabel, 11f, Theme.FONT_MEDIUM) + 36f
+        val labelW = ui.width(shuffleLabel, 11f, Theme.FONT_MEDIUM)
+        val fullW = labelW + 36f
+        // 窄窗口下右侧随机按钮会压到中间的队列按钮：退化成纯图标按钮
+        val compactShuffle = volRect.x - 40f - fullW < queueB.right + 12f
+        val sw = if (compactShuffle) 26f else fullW
         val shB = LayoutBounds(volRect.x - 40f - sw, vy - 13f, sw, 26f)
         ui.card(
             shB,
@@ -117,8 +122,10 @@ internal class PlayerBar(private val screen: MusicScreen, private val module: Ne
             },
             9f,
         )
-        ui.icon("⇄", shB.x + 13f, vy, 11f, Theme.TEXT_PRIMARY)
-        ui.text(shuffleLabel, shB.x + 24f, vy - 11f * 0.39f - 0.5f, 11f, Theme.TEXT_PRIMARY, Theme.FONT_MEDIUM)
+        ui.icon("⇄", if (compactShuffle) shB.x + shB.width / 2f else shB.x + 13f, vy, 11f, Theme.TEXT_PRIMARY)
+        if (!compactShuffle) {
+            ui.text(shuffleLabel, shB.x + 24f, Theme.textCenterY(vy, 11f), 11f, Theme.TEXT_PRIMARY, Theme.FONT_MEDIUM)
+        }
         ui.hits += shB to { module.toggleShuffle() }
     }
 

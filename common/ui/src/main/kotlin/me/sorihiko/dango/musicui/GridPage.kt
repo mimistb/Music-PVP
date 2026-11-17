@@ -21,6 +21,31 @@ internal class GridPage(private val screen: MusicScreen) {
     private var pos = ScreenState.homeScroll
     private var maxScroll = 0f
 
+    /**
+     * 一次布局下的栅格尺寸。封面墙和加载骨架共用同一套算法，
+     * 避免两处各写一遍列宽 / 行高（以前骨架和真实内容会因公式不同而错位）。
+     */
+    private class GridMetrics(val gap: Float, val cols: Int, val cw: Float, val rowH: Float)
+
+    private fun metrics(area: LayoutBounds): GridMetrics {
+        val gap = 22f
+        val cols = max(2, ((area.width + gap) / (160f + gap)).toInt())
+        val cw = (area.width - gap * (cols - 1)) / cols
+        return GridMetrics(gap, cols, cw, cw + 46f)
+    }
+
+    /** 歌名折行缓存：宽度不变时每帧复用，避免重复测量字体 */
+    private var wrapWidth = -1f
+    private val wrapCache = HashMap<String, List<String>>()
+
+    private fun nameLines(name: String, maxW: Float): List<String> {
+        if (maxW != wrapWidth) {
+            wrapWidth = maxW
+            wrapCache.clear()
+        }
+        return wrapCache.getOrPut(name) { ui.wrap2(name, maxW, 12f, Theme.FONT_MEDIUM) }
+    }
+
     fun tick() {
         pos = ui.approach(pos, target, 70f)
     }
@@ -38,15 +63,16 @@ internal class GridPage(private val screen: MusicScreen) {
 
     fun draw(page: LayoutBounds, title: String, sub: String, items: List<NeteasePlaylist>, loading: Boolean) {
         ui.headerAnim {
-            ui.text(title, page.x, page.y, 22f, Theme.TEXT_PRIMARY, Theme.FONT_DISPLAY)
+            ui.text(title, page.x, page.y, Theme.PAGE_TITLE_SIZE, Theme.TEXT_PRIMARY, Theme.FONT_DISPLAY)
             val status = when {
                 loading && System.currentTimeMillis() - ui.pageAt > 12000L -> "网络较慢，仍在加载…"
                 loading -> "正在加载…"
                 else -> sub
             }
-            ui.text(status, page.x, page.y + 30f, 11f, Theme.TEXT_SECONDARY, Theme.FONT_SEMIBOLD)
+            ui.text(status, page.x, page.y + Theme.PAGE_SUB_Y, 11f, Theme.TEXT_SECONDARY, Theme.FONT_SEMIBOLD)
         }
-        area = LayoutBounds(page.x, page.y + 54f, page.width, page.bottom - (page.y + 54f))
+        drawRefreshButton(page)
+        area = LayoutBounds(page.x, page.y + Theme.PAGE_HEADER_H, page.width, page.bottom - (page.y + Theme.PAGE_HEADER_H))
         when {
             // 首次加载：用骨架块给出明确反馈，避免整页空白像“卡死”
             loading && items.isEmpty() -> drawSkeleton(area)
@@ -55,22 +81,38 @@ internal class GridPage(private val screen: MusicScreen) {
         }
     }
 
+    /**
+     * 功能操作区的「刷新歌单」：重新请求当前平台的推荐歌单接口，
+     * 数据回来前保留旧内容，回来后整块替换；加载中禁止重复点击。
+     */
+    private fun drawRefreshButton(page: LayoutBounds) {
+        val loading = Library.recommendLoading
+        val label = if (loading) "刷新中…" else "刷新歌单"
+        val w = ui.width(label, 11f, Theme.FONT_MEDIUM) + 42f
+        val b = LayoutBounds(page.right - w, page.y + 6f, w, 26f)
+        val hov = !loading && ui.hover(b)
+        ui.panel(b, 13f, active = loading || hov)
+        ui.icon("↻", b.x + 16f, b.y + 13f, 11f, if (loading) Theme.TEXT_TERTIARY else Theme.TEXT_SECONDARY)
+        ui.text(
+            label, b.x + 28f, b.y + 8f, 11f,
+            if (loading) Theme.TEXT_TERTIARY else Theme.TEXT_PRIMARY, Theme.FONT_MEDIUM,
+        )
+        if (!loading) ui.hits += b to { Library.refreshRecommend() }
+    }
+
     /** 加载骨架：两行封面 + 标题占位，带统一流光；不改变任何加载逻辑 */
     private fun drawSkeleton(area: LayoutBounds) {
-        val gap = 22f
-        val cols = max(2, ((area.width + gap) / (160f + gap)).toInt())
-        val cw = (area.width - gap * (cols - 1)) / cols
-        val rowH = cw + 46f
+        val m = metrics(area)
         ui.beginClip(area)
         var r = 0
         while (r < 3) {
-            val y = area.y + r * rowH
-            if (y + cw > area.bottom) break
-            for (c in 0 until cols) {
-                val x = area.x + c * (cw + gap)
-                ui.skeleton(LayoutBounds(x, y, cw, cw), 12f)
-                ui.skeleton(LayoutBounds(x + 2f, y + cw + 8f, cw * 0.72f, 10f), 5f)
-                ui.skeleton(LayoutBounds(x + 2f, y + cw + 24f, cw * 0.46f, 8f), 4f)
+            val y = area.y + r * m.rowH
+            if (y + m.cw > area.bottom) break
+            for (c in 0 until m.cols) {
+                val x = area.x + c * (m.cw + m.gap)
+                ui.skeleton(LayoutBounds(x, y, m.cw, m.cw), 12f)
+                ui.skeleton(LayoutBounds(x + 2f, y + m.cw + 8f, m.cw * 0.72f, 10f), 5f)
+                ui.skeleton(LayoutBounds(x + 2f, y + m.cw + 24f, m.cw * 0.46f, 8f), 4f)
             }
             r++
         }
@@ -84,18 +126,18 @@ internal class GridPage(private val screen: MusicScreen) {
     }
 
     private fun drawGrid(area: LayoutBounds, items: List<NeteasePlaylist>) {
-        val gap = 22f
-        val cols = max(2, ((area.width + gap) / (160f + gap)).toInt())
-        val cw = (area.width - gap * (cols - 1)) / cols
-        val rowH = cw + 46f
+        val m = metrics(area)
+        val cols = m.cols
+        val cw = m.cw
+        val rowH = m.rowH
         val totalRows = (items.size + cols - 1) / cols
         maxScroll = max(0f, totalRows * rowH - area.height)
         target = target.coerceIn(0f, maxScroll)
         pos = pos.coerceIn(0f, maxScroll)
         ScreenState.homeScroll = target
 
-        // 上下多留一点空间给悬停时放大的边框
-        val clip = LayoutBounds(area.x - 6f, area.y - 6f, area.width + 12f, area.height + 6f)
+        // 上下左右各多留 6px 给悬停时放大的边框（之前只在上方留了，底部会被裁掉一条）
+        val clip = LayoutBounds(area.x - 6f, area.y - 6f, area.width + 12f, area.height + 12f)
         ui.beginClip(clip)
         val firstRow = max(0, (pos / rowH).toInt())
         val lastRow = min(totalRows - 1, ((pos + area.height) / rowH).toInt())
@@ -104,7 +146,7 @@ internal class GridPage(private val screen: MusicScreen) {
                 val i = r * cols + c
                 if (i >= items.size) break
                 val p = items[i]
-                val x = area.x + c * (cw + gap)
+                val x = area.x + c * (cw + m.gap)
                 val y = area.y + r * rowH - pos
                 ui.itemAnim((r - firstRow) * cols + c) {
                     val cover = LayoutBounds(x, y, cw, cw)
@@ -118,7 +160,7 @@ internal class GridPage(private val screen: MusicScreen) {
                         ui.ctx.drawShape(pb, ShapeStyle(RED, 15f))
                         ui.icon("▶", pb.x + 16f, pb.y + 15f, 12f, Theme.TEXT_PRIMARY)
                     }
-                    val lines = ui.wrap2(p.name, cw - 4f, 12f, Theme.FONT_MEDIUM)
+                    val lines = nameLines(p.name, cw - 4f)
                     lines.forEachIndexed { li, line ->
                         ui.text(line, x + 2f, cover.bottom + 8f + li * 15f, 12f, Theme.TEXT_PRIMARY, Theme.FONT_MEDIUM)
                     }

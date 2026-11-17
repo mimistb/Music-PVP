@@ -26,6 +26,9 @@ object ChatTranslateRuntime {
 
     private val effect = ChatTranslateModule()
 
+    /** 模块实例注册后不会变：缓存起来，聊天热路径不用每次查找 */
+    private var cachedSettings: ChatTranslateSettingsModule? = null
+
     private var installed = false
     private var registeredName: String? = null
 
@@ -40,13 +43,19 @@ object ChatTranslateRuntime {
         }
     }
 
+    /** 宿主设置模块；聊天栏控制条也用它读写同一份配置。 */
+    fun settings(): ChatTranslateSettingsModule? {
+        cachedSettings?.let { return it }
+        return try {
+            DangoMusic.instance.moduleManager.get(ChatTranslateSettingsModule::class.java).also { cachedSettings = it }
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
     /** 把宿主设置写进模块的 public 字段；每帧/每次事件前调用。 */
     fun sync() {
-        val module = try {
-            DangoMusic.instance.moduleManager.get(ChatTranslateSettingsModule::class.java)
-        } catch (t: Throwable) {
-            return
-        }
+        val module = settings() ?: return
         effect.enabled = module.enabled
         effect.showTranslateButton = module.showTranslateButton.get()
         effect.autoTranslateIncoming = module.autoTranslateIncoming.get()

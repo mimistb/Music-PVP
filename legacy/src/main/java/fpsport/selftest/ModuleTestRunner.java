@@ -1,11 +1,5 @@
 package fpsport.selftest;
 
-import fpsport.adnin.anticheat.Alert;
-import fpsport.adnin.anticheat.AnticheatConfig;
-import fpsport.adnin.anticheat.AnticheatModule;
-import fpsport.adnin.anticheat.CheatFlag;
-import fpsport.adnin.anticheat.FlagType;
-import fpsport.adnin.anticheat.PlayerLabel;
 import fpsport.adnin.chat.ChatConfig;
 import fpsport.adnin.chat.ChatDataModule;
 import fpsport.adnin.chat.ChatEvent;
@@ -33,9 +27,10 @@ public final class ModuleTestRunner {
     }
 
     public static void main(String[] args) {
-        testAnticheat();
         testChat();
         testSession();
+        CoreLogicTest.run(new Assertions());
+        PvpLogicTest.run(new Assertions());
 
         System.out.println("PASSED=" + passed + " FAILED=" + failures.size());
         for (String f : failures) {
@@ -47,122 +42,27 @@ public final class ModuleTestRunner {
         System.out.println("ALL PASS");
     }
 
-    // ================= 反作弊 =================
-
-    private static void testAnticheat() {
-        AnticheatConfig cfg = new AnticheatConfig();
-        AnticheatModule m = new AnticheatModule(cfg);
-        m.setSelfName("Me");
-
-        // 1 默认参数校验通过
-        check("anticheat default validate", true);
-
-        // 2 关闭的检查项不产生告警
-        cfg = new AnticheatConfig();
-        cfg.legitScaffold = false;
-        m = new AnticheatModule(cfg);
-        m.submit(new CheatFlag("Bob", FlagType.LEGIT_SCAFFOLD, 0.95, "legit", 100L));
-        eq("disabled check produces no alert", m.alerts().size(), 0);
-
-        // 3 高置信度立刻确认 + 关键词标签
-        cfg = new AnticheatConfig();
-        m = new AnticheatModule(cfg);
-        m.submit(new CheatFlag("Bob", FlagType.AUTOBLOCK, 0.9, "blatant cheater", 100L));
-        eq("confidence confirm count", m.alerts().size(), 1);
-        eq("label blatant", m.alerts().get(0).label, PlayerLabel.BLATANT);
-
-        // 4 低置信度累计到 confirmFlagCount 才确认
-        cfg = new AnticheatConfig();
-        m = new AnticheatModule(cfg);
-        m.submit(new CheatFlag("Bob", FlagType.NO_SLOW, 0.1, "x", 100L));
-        m.submit(new CheatFlag("Bob", FlagType.NO_SLOW, 0.1, "x", 200L));
-        eq("two low flags no alert", m.alerts().size(), 0);
-        m.submit(new CheatFlag("Bob", FlagType.NO_SLOW, 0.1, "closet cheating", 300L));
-        eq("three low flags alert", m.alerts().size(), 1);
-        eq("label closet", m.alerts().get(0).label, PlayerLabel.CLOSET);
-        eq("flag count in window", m.countInWindow("Bob", FlagType.NO_SLOW), 3);
-
-        // 5 LEGIT_SCAFFOLD 门槛被放大（3 * 2 = 6）
-        cfg = new AnticheatConfig();
-        m = new AnticheatModule(cfg);
-        for (int i = 0; i < 5; i++) {
-            m.submit(new CheatFlag("Bob", FlagType.LEGIT_SCAFFOLD, 0.1, "x", 100L + i * 100L));
+    /** 断言入口：同时供本类与 [CoreLogicTest] 使用，保证两套用例共用一套计数。 */
+    public static final class Assertions {
+        public void eq(String label, Object actual, Object expected) {
+            ModuleTestRunner.eq(label, actual, expected);
         }
-        eq("legit scaffold 5 flags no alert", m.alerts().size(), 0);
-        m.submit(new CheatFlag("Bob", FlagType.LEGIT_SCAFFOLD, 0.1, "x", 1000L));
-        eq("legit scaffold 6 flags alert", m.alerts().size(), 1);
 
-        // 6 同一窗口内去重
-        cfg = new AnticheatConfig();
-        m = new AnticheatModule(cfg);
-        m.submit(new CheatFlag("Bob", FlagType.SCAFFOLD_A, 0.9, "s", 100L));
-        m.submit(new CheatFlag("Bob", FlagType.SCAFFOLD_A, 0.9, "s", 200L));
-        eq("dedupe in same window", m.alerts().size(), 1);
-
-        // 7 窗口过期后可以再次告警
-        m.submit(new CheatFlag("Bob", FlagType.SCAFFOLD_A, 0.9, "s", 20_000L));
-        eq("alert after window", m.alerts().size(), 2);
-
-        // 8 ignoreSelf
-        cfg = new AnticheatConfig();
-        m = new AnticheatModule(cfg);
-        m.setSelfName("Me");
-        m.submit(new CheatFlag("Me", FlagType.AUTOBLOCK, 1.0, "x", 100L));
-        eq("ignore self", m.alerts().size(), 0);
-
-        // 9 提示音只在确认时触发
-        cfg = new AnticheatConfig();
-        m = new AnticheatModule(cfg);
-        final int[] sounds = {0};
-        m.setFlagSoundSink(new fpsport.adnin.anticheat.AnticheatApi.FlagSoundSink() {
-            @Override
-            public void play(String soundName, float volume, float pitch) {
-                sounds[0]++;
-            }
-        });
-        m.submit(new CheatFlag("Bob", FlagType.AUTOBLOCK, 0.1, "x", 100L));
-        eq("no sound before confirm", sounds[0], 0);
-        m.submit(new CheatFlag("Bob", FlagType.AUTOBLOCK, 0.9, "x", 200L));
-        eq("sound on confirm", sounds[0], 1);
-
-        // 10 关键词分类
-        cfg = new AnticheatConfig();
-        m = new AnticheatModule(cfg);
-        eq("classify sniper", m.classify("possible sniper"), PlayerLabel.SNIPER);
-        eq("classify confirmed", m.classify("confirmed cheater"), PlayerLabel.CONFIRMED);
-        eq("classify caution", m.classify("risky player"), PlayerLabel.CAUTION);
-        eq("classify none", m.classify("nice person"), PlayerLabel.NONE);
-
-        // 11 非法参数不生效
-        cfg = new AnticheatConfig();
-        cfg.confirmFlagCount = 0;
-        try {
-            m.updateConfig(cfg);
-            check("invalid config should throw", false);
-        } catch (IllegalArgumentException expected) {
-            check("invalid config throws", true);
+        public void eq(String label, int actual, int expected) {
+            ModuleTestRunner.eq(label, actual, expected);
         }
-        eq("config unchanged after invalid update", m.config().confirmFlagCount, 3);
 
-        // 12 reset 清空
-        m.submit(new CheatFlag("Bob", FlagType.AUTOBLOCK, 0.9, "x", 100L));
-        m.reset();
-        eq("reset clears alerts", m.alerts().size(), 0);
-        eq("reset clears window", m.countInWindow("Bob", FlagType.AUTOBLOCK), 0);
+        public void eq(String label, long actual, long expected) {
+            ModuleTestRunner.eq(label, actual, expected);
+        }
 
-        // 13 总开关关闭时全部丢弃
-        cfg = new AnticheatConfig();
-        cfg.anticheat = false;
-        m = new AnticheatModule(cfg);
-        m.submit(new CheatFlag("Bob", FlagType.AUTOBLOCK, 1.0, "x", 100L));
-        eq("anticheat off", m.alerts().size(), 0);
+        public void eq(String label, double actual, double expected) {
+            ModuleTestRunner.eq(label, actual, expected);
+        }
 
-        // 14 置信度越界被夹取而不是崩
-        cfg = new AnticheatConfig();
-        m = new AnticheatModule(cfg);
-        m.submit(new CheatFlag("Bob", FlagType.AUTOBLOCK, 2.0, "x", 100L));
-        eq("clamped confidence confirm", m.alerts().size(), 1);
-        eq("clamped confidence value", m.alerts().get(0).confidence, 1.0D);
+        public void check(String label, boolean condition) {
+            ModuleTestRunner.check(label, condition);
+        }
     }
 
     // ================= 聊天 =================

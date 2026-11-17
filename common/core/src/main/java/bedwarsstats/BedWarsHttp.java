@@ -62,17 +62,27 @@ public final class BedWarsHttp {
     private BedWarsHttp() {
     }
 
+    /** 超时下限：调用方传 0 / 负数时 HttpURLConnection 会当成"无限等待"。 */
+    private static final int MINIMUM_TIMEOUT_MILLIS = 1000;
+    /** 读取上限下限：0 会让所有响应都被判成 tooLarge。 */
+    private static final int MINIMUM_MAX_BYTES = 1024;
+
     public static Response get(String url, String apiKey, String userAgent,
                                int maxBytes, int timeoutMillis) {
+        final int budget = Math.max(MINIMUM_MAX_BYTES, maxBytes);
+        final int timeout = Math.max(MINIMUM_TIMEOUT_MILLIS, timeoutMillis);
         HttpURLConnection connection = null;
         InputStream stream = null;
         try {
             connection = (HttpURLConnection) new URL(url).openConnection();
             connection.setRequestMethod("GET");
-            connection.setConnectTimeout(timeoutMillis);
-            connection.setReadTimeout(timeoutMillis);
+            connection.setConnectTimeout(timeout);
+            connection.setReadTimeout(timeout);
             connection.setInstanceFollowRedirects(true);
             connection.setRequestProperty("Accept", "application/json");
+            // 明确拒绝压缩：否则服务端可能透明 gzip，Content-Length 预检失效，
+            // 超大响应要读满上限才发现（白花流量）。
+            connection.setRequestProperty("Accept-Encoding", "identity");
             if (userAgent != null && !userAgent.isEmpty()) {
                 connection.setRequestProperty("User-Agent", userAgent);
             }
@@ -86,7 +96,7 @@ public final class BedWarsHttp {
             final int rateReset = headerInteger(connection, "RateLimit-Reset");
 
             final long declaredLength = connection.getContentLengthLong();
-            if (declaredLength > maxBytes) {
+            if (declaredLength > budget) {
                 return new Response(status, "", true, null, rateLimit, rateRemaining, rateReset);
             }
 
@@ -102,8 +112,13 @@ public final class BedWarsHttp {
             int total = 0;
             int read;
             while ((read = stream.read(chunk)) >= 0) {
+                if (read == 0) {
+                    // 理论上不会发生（len > 0 时 read 要么返回正数要么返回 -1），
+                    // 但真遇到了不能空转死循环。
+                    continue;
+                }
                 total += read;
-                if (total > maxBytes) {
+                if (total > budget) {
                     // 超过上限后不再保留任何服务端可控内容。
                     return new Response(status, "", true, null,
                             rateLimit, rateRemaining, rateReset);

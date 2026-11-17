@@ -3,7 +3,11 @@ package me.sorihiko.dango.lyrics
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import me.sorihiko.dango.DangoLogger
+import me.sorihiko.dango.cache.MediaCache
+import me.sorihiko.dango.music.NeteaseApi
+import me.sorihiko.dango.music.NeteaseTrack
 
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 import java.nio.charset.StandardCharsets
@@ -175,13 +179,22 @@ object LyricSplit {
 object LyricsProvider {
 
     private const val UA =
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36 DangoMusic"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+
+    /** 没登录也要带一个空会话 Cookie，否则部分接口会返回空歌词 */
+    private const val COOKIE = "os=pc; appver=2.10.13"
+
+    private const val ATTEMPTS = 3
+    private const val RETRY_DELAY_MS = 300L
 
     /**
      * 按网易云歌曲 ID 取歌词。优先拿逐字歌词（yrc，每个字都有时间，文闪用），
      * 拿不到再用普通 LRC。
      */
     fun neteaseLyricById(id: Long): Lyrics? {
+        val cacheKey = "netease_$id"
+        // 命中磁盘缓存就不发请求：歌词几乎不变，一首歌一生只需要下一次
+        cachedLyric(cacheKey)?.let { return it }
         var lrcText: String? = null
         var yrcText: String? = null
         val urls = listOf(
@@ -203,10 +216,125 @@ object LyricsProvider {
         }
         yrcText?.let { y ->
             val lines = parseYrc(y)
-            if (lines.isNotEmpty()) return Lyrics(lines, "NetEase")
+            if (lines.isNotEmpty()) {
+                storeLyric(cacheKey, y, lrcText)
+                return Lyrics(lines, "NetEase")
+            }
         }
-        val lines = lrcText?.let { parseLrc(it) } ?: return null
-        return if (lines.isEmpty()) null else Lyrics(lines, "NetEase")
+        val lines = lrcText?.let { parseNeteaseLrc(it) } ?: return null
+        if (lines.isEmpty()) return null
+        storeLyric(cacheKey, null, lrcText)
+        return Lyrics(lines, "NetEase")
+    }
+
+    /** 歌词缓存有效期：歌单里老歌的歌词基本不会变，留 60 天足够 */
+    private const val LYRICS_TTL_MS = 60L * 24 * 60 * 60 * 1000
+
+    private fun cachedLyric(key: String): Lyrics? {
+        val text = MediaCache.readText("lyrics", key, LYRICS_TTL_MS) ?: return null
+        return try {
+            val o = JsonParser().parse(text).asJsonObject
+            val yrc = o.get("yrc")?.let { if (it.isJsonNull) null else it.asString }
+            val lrc = o.get("lrc")?.let { if (it.isJsonNull) null else it.asString }
+            val lines = yrc?.let { parseYrc(it) }?.takeIf { it.isNotEmpty() }
+                ?: lrc?.let { parseNeteaseLrc(it) }?.takeIf { it.isNotEmpty() }
+                ?: return null
+            MediaCache.touch("lyrics", key)
+            Lyrics(lines, "NetEase")
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun storeLyric(key: String, yrc: String?, lrc: String?) {
+        if (yrc == null && lrc == null) return
+        try {
+            val o = JsonObject()
+            o.addProperty("yrc", yrc)
+            o.addProperty("lrc", lrc)
+            MediaCache.writeText("lyrics", key, o.toString())
+        } catch (_: Exception) {
+            // 缓存写失败不影响本次歌词显示
+        }
+    }
+
+    /**
+     * 按「歌名 + 歌手」在网易云检索，再用命中的歌曲 ID 取歌词。
+     * QQ / 酷狗曲目没有网易云的 ID，只能走这条降级链路。
+     */
+    fun searchNeteaseLyric(title: String, artists: List<String>): Lyrics? {
+        val name = title.trim()
+        if (name.isEmpty()) return null
+        return try {
+            val query = if (artists.isEmpty()) name else name + " " + artists.first()
+            val results = NeteaseApi.search(query, limit = 8)
+            val best = results.maxByOrNull { score(name, artists, it) } ?: return null
+            if (score(name, artists, best) < 60) return null
+            neteaseLyricById(best.id)
+        } catch (e: Exception) {
+            DangoLogger.warn("NetEase lyric search failed: {}", e.toString())
+            null
+        }
+    }
+
+    /** 搜索结果匹配度：歌名完全相同 100、互相包含 60，歌手有交集再 +30 */
+    internal fun score(title: String, artists: List<String>, track: NeteaseTrack): Int {
+        val want = norm(title)
+        val got = norm(track.name)
+        if (want.isEmpty() || got.isEmpty()) return 0
+        var s = when {
+            want == got -> 100
+            want.contains(got) || got.contains(want) -> 60
+            else -> 0
+        }
+        if (s > 0 && artists.isNotEmpty()) {
+            val names = artists.map { norm(it) }.filter { it.isNotEmpty() }.toSet()
+            if (names.isNotEmpty() && track.artists.any { norm(it) in names }) s += 30
+        }
+        return s
+    }
+
+    private fun norm(s: String): String = s.lowercase().filter { it.isLetterOrDigit() }
+
+    /**
+     * 网易云的 lrc 有两种行混在一起：
+     *   传统 LRC  [00:12.34]歌词
+     *   新格式    {"t":12340,"c":[{"tx":"歌"},{"tx":"词"}]}
+     * 两种都要解析，按时间排序去重。
+     */
+    fun parseNeteaseLrc(text: String): List<LyricLine> {
+        val out = mutableListOf<LyricLine>()
+        for (raw in text.lines()) {
+            val line = raw.trim()
+            val parsed = when {
+                line.startsWith("{") -> parseJsonLine(line)?.let { listOf(it) } ?: emptyList()
+                line.startsWith("[") -> parseLrc(line)
+                else -> emptyList()
+            }
+            out += parsed
+        }
+        out.sortBy { it.timeMs }
+        val seen = HashSet<String>()
+        return out.filter { seen.add(it.timeMs.toString() + '|' + it.text) }
+    }
+
+    /** 解析新格式的一行；不是合法 JSON / 空文本 / 版权信息行都返回 null */
+    private fun parseJsonLine(line: String): LyricLine? {
+        return try {
+            val root = JsonParser().parse(line)
+            val o = if (root.isJsonObject) root.asJsonObject else return null
+            val tEl = o.get("t") ?: return null
+            if (tEl.isJsonNull) return null
+            val time = tEl.asLong
+            val arr = o.getAsJsonArray("c") ?: return null
+            val text = arr.joinToString("") { el ->
+                val obj = el as? JsonObject
+                obj?.get("tx")?.takeIf { !it.isJsonNull }?.asString ?: ""
+            }.trim()
+            if (text.isEmpty() || credit.containsMatchIn(text)) null else LyricLine(time, text)
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun lyricField(o: JsonObject, key: String): String? {
@@ -280,16 +408,40 @@ object LyricsProvider {
 
     // ---------------------------------------------------------------- HTTP
 
+    /** 网络抖动 / 429 / 5xx 重试两次；4xx（非 429）直接放弃 */
     private fun httpGet(url: String, referer: String? = null): String? {
+        var lastError: Exception? = null
+        for (attempt in 0 until ATTEMPTS) {
+            try {
+                return httpGetOnce(url, referer) ?: return null
+            } catch (e: Exception) {
+                lastError = e
+            }
+            if (attempt < ATTEMPTS - 1) {
+                try {
+                    Thread.sleep(RETRY_DELAY_MS * (attempt + 1))
+                } catch (_: InterruptedException) {
+                }
+            }
+        }
+        if (lastError != null) DangoLogger.warn("NetEase lyric request failed: {}", lastError.toString())
+        return null
+    }
+
+    private fun httpGetOnce(url: String, referer: String?): String? {
         val conn = URL(url).openConnection() as HttpURLConnection
         try {
             conn.connectTimeout = 6000
             conn.readTimeout = 8000
             conn.setRequestProperty("User-Agent", UA)
             conn.setRequestProperty("Accept", "application/json")
+            conn.setRequestProperty("Cookie", COOKIE)
             if (referer != null) conn.setRequestProperty("Referer", referer)
             val code = conn.responseCode
-            if (code !in 200..299) return null
+            if (code !in 200..299) {
+                if (code == 429 || code >= 500) throw IOException("HTTP $code")
+                return null
+            }
             return conn.inputStream.use { String(it.readBytes(), StandardCharsets.UTF_8) }
         } finally {
             conn.disconnect()

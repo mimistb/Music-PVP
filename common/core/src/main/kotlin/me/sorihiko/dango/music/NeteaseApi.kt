@@ -4,6 +4,8 @@ import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import me.sorihiko.dango.DangoLogger
 import me.sorihiko.dango.DangoMusic
+import me.sorihiko.dango.security.CredCrypto
+import me.sorihiko.dango.security.Redact
 
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -19,6 +21,8 @@ class NeteasePlaylist(
     val coverUrl: String,
     /** 自己创建的（含"我喜欢的音乐"）还是收藏别人的 */
     val owned: Boolean,
+    /** 歌单所属平台：netease / qq / kugou */
+    val provider: String = "netease",
 )
 
 /**
@@ -35,6 +39,11 @@ object NeteaseApi {
 
     private val cookieFile: File get() = DangoMusic.instance.clientDir.resolve("netease_cookie.txt").toFile()
 
+    /** 解析后的 Cookie 缓存：loggedIn 每次刷新界面都会被问一次，不能每次都读盘 + 解密 */
+    @Volatile private var cookieCache: String? = null
+    /** 缓存对应的文件修改时间；用户在外部手改了文件也能自动失效 */
+    @Volatile private var cookieStamp = -1L
+
     @Volatile var nickname: String = ""
         private set
     @Volatile var userId: Long = 0L
@@ -42,26 +51,38 @@ object NeteaseApi {
     @Volatile var avatarUrl: String = ""
         private set
 
-    /** 读 cookie 文件；只填了 MUSIC_U 的值也行 */
+    /** 读 cookie 文件（密文自动解密）；只填了 MUSIC_U 的值也行 */
     private fun cookie(): String {
         val f = cookieFile
-        if (!f.isFile) return ""
-        var c = String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8).trim()
-        if (c.isEmpty()) return ""
-        if (!c.contains("=")) c = "MUSIC_U=$c"
+        val stamp = if (f.isFile) runCatching { f.lastModified() }.getOrDefault(-1L) else -1L
+        cookieCache?.let { if (stamp == cookieStamp) return it }
+        cookieStamp = stamp
+        if (!f.isFile) {
+            cookieCache = ""
+            return ""
+        }
+        var c = try {
+            String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8).trim()
+        } catch (_: Exception) {
+            ""
+        }
+        if (CredCrypto.isEncrypted(c)) c = CredCrypto.decrypt(c).trim()
+        if (c.isNotEmpty() && !c.contains("=")) c = "MUSIC_U=$c"
+        cookieCache = c
         return c
     }
 
     val loggedIn: Boolean get() = cookie().contains("MUSIC_U=")
 
-    /** 扫码登录成功后保存 Cookie，并清掉缓存的账号信息 */
+    /** 扫码登录成功后保存 Cookie（加密落盘），并清掉缓存的账号信息 */
     fun saveCookie(cookie: String) {
         try {
             val f = cookieFile
             f.parentFile.mkdirs()
-            f.writeText(cookie, StandardCharsets.UTF_8)
+            f.writeText(if (cookie.isEmpty()) "" else CredCrypto.encrypt(cookie), StandardCharsets.UTF_8)
+            cookieCache = null
         } catch (e: Exception) {
-            DangoLogger.warn("Save NetEase cookie failed: {}", e.toString())
+            DangoLogger.warn("Save NetEase cookie failed: {}", e.javaClass.simpleName)
         }
         resetUser()
     }
@@ -106,7 +127,7 @@ object NeteaseApi {
                     return id
                 }
             } catch (e: Exception) {
-                DangoLogger.warn("NetEase account lookup failed: {}", e.toString())
+                DangoLogger.warn("NetEase account lookup failed: {}", Redact.text(e.toString()))
             }
         }
         // 网易云客户端本地记录（不需要登录 cookie）
@@ -186,9 +207,10 @@ object NeteaseApi {
         return out
     }
 
-    /** 首页推荐歌单（不需要登录） */
-    fun recommendPlaylists(): List<NeteasePlaylist> {
-        val o = getJson("https://music.163.com/api/personalized/playlist?limit=30") ?: return emptyList()
+    /** 首页推荐歌单（不需要登录）；offset 用来翻页，否则同一天永远返回同一批 */
+    fun recommendPlaylists(offset: Int = 0): List<NeteasePlaylist> {
+        val o = getJson("https://music.163.com/api/personalized/playlist?limit=30&offset=" + offset.coerceAtLeast(0))
+            ?: return emptyList()
         val arr = o.getAsJsonArray("result") ?: return emptyList()
         return arr.mapNotNull { el ->
             val p = el as? JsonObject ?: return@mapNotNull null
@@ -215,7 +237,7 @@ object NeteaseApi {
                 ?: (o?.get("data") as? JsonObject)?.getAsJsonArray("dailySongs")
             if (arr != null) return arr.mapNotNull { el -> if (el.isJsonObject) NeteaseTrack.parse(el.asJsonObject) else null }
         } catch (e: Exception) {
-            DangoLogger.warn("NetEase daily recommend failed: {}", e.toString())
+            DangoLogger.warn("NetEase daily recommend failed: {}", Redact.text(e.toString()))
         }
         // 老的 GET 接口
         return try {
@@ -242,24 +264,32 @@ object NeteaseApi {
     /** 搜索歌单（和搜歌一起发，结果都显示在搜索页） */
     fun searchPlaylists(keyword: String, limit: Int = 12): List<NeteasePlaylist> {
         if (keyword.isBlank()) return emptyList()
-        return try {
-            val o = getJson("https://music.163.com/api/cloudsearch/pc?s=" + enc(keyword.trim()) +
-                "&type=1000&offset=0&limit=$limit") ?: return emptyList()
-            val result = o.get("result") as? JsonObject ?: return emptyList()
-            val arr = result.getAsJsonArray("playlists") ?: return emptyList()
-            arr.mapNotNull { el ->
-                val p = el as? JsonObject ?: return@mapNotNull null
-                NeteasePlaylist(
-                    id = p.get("id")?.asLong ?: return@mapNotNull null,
-                    name = p.str("name"),
-                    trackCount = p.get("trackCount")?.asInt ?: 0,
-                    coverUrl = p.str("coverImgUrl"),
-                    owned = false,
-                )
-            }
-        } catch (e: Exception) {
-            DangoLogger.warn("NetEase playlist search failed: {}", e.toString())
-            emptyList()
+        val q = keyword.trim()
+        // 主接口 + 老接口各试一次；cloudsearch 偶发返回空 result
+        val urls = listOf(
+            "https://music.163.com/api/cloudsearch/pc?s=" + enc(q) + "&type=1000&offset=0&limit=$limit",
+            "https://music.163.com/api/search/get/web?s=" + enc(q) + "&type=1000&offset=0&limit=$limit",
+        )
+        for (url in urls) {
+            val lists = try { playlistsOf(getJson(url)) } catch (_: Exception) { emptyList() }
+            if (lists.isNotEmpty()) return lists
+        }
+        DangoLogger.warn("NetEase playlist search failed: no result for {}", q)
+        return emptyList()
+    }
+
+    private fun playlistsOf(o: JsonObject?): List<NeteasePlaylist> {
+        val result = o?.get("result") as? JsonObject ?: return emptyList()
+        val arr = result.getAsJsonArray("playlists") ?: return emptyList()
+        return arr.mapNotNull { el ->
+            val p = el as? JsonObject ?: return@mapNotNull null
+            NeteasePlaylist(
+                id = p.get("id")?.asLong ?: return@mapNotNull null,
+                name = p.str("name"),
+                trackCount = p.get("trackCount")?.asInt ?: 0,
+                coverUrl = p.str("coverImgUrl"),
+                owned = false,
+            )
         }
     }
 
@@ -378,7 +408,7 @@ object NeteaseApi {
             val trial = d?.get("freeTrialInfo")?.let { !it.isJsonNull } ?: false
             if (!url.isNullOrEmpty() && (type.isEmpty() || type == "mp3")) return SongUrl(url, trial)
         } catch (e: Exception) {
-            DangoLogger.warn("NetEase song url failed: {}", e.toString())
+            DangoLogger.warn("NetEase song url failed: {}", Redact.text(e.toString()))
         }
         return SongUrl("https://music.163.com/song/media/outer/url?id=$id.mp3", false)
     }
@@ -393,8 +423,13 @@ object NeteaseApi {
         return if (root.isJsonObject) root.asJsonObject else null
     }
 
-    /** 下载（跟随重定向，包括 http↔https）；只对 music.163.com 带 cookie */
-    fun request(url: String, accept: String = "*/*", maxBytes: Int = 64 * 1024 * 1024): ByteArray? {
+    /** 下载（跟随重定向，包括 http↔https）；只对 music.163.com 带 cookie；headers 用于 QQ/酷狗等音源 */
+    fun request(
+        url: String,
+        accept: String = "*/*",
+        maxBytes: Int = 64 * 1024 * 1024,
+        headers: Map<String, String> = emptyMap(),
+    ): ByteArray? {
         var current = url
         repeat(6) {
             val conn = URL(current).openConnection() as HttpURLConnection
@@ -410,6 +445,7 @@ object NeteaseApi {
                     val c = cookie()
                     conn.setRequestProperty("Cookie", if (c.isEmpty()) "os=pc; appver=2.10.13" else "$c; os=pc; appver=2.10.13")
                 }
+                headers.forEach { (k, v) -> conn.setRequestProperty(k, v) }
                 val code = conn.responseCode
                 if (code in 300..399) {
                     val loc = conn.getHeaderField("Location") ?: return null

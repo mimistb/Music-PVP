@@ -69,7 +69,11 @@ public final class ChatTranslateModule {
     /** 以 / 或 . 开头的消息不翻译，原样发送。 */
     public boolean skipCommands = true;
 
-    private static final ExecutorService EXECUTOR = Executors.newSingleThreadExecutor(r -> {
+    /**
+     * 翻译线程池：弱网下单条请求可能占满十几秒，单线程会让后续消息全部排队；
+     * 两条线程 + 无界队列，界面线程永远不阻塞，同时又不会因为并发过高被服务端限流。
+     */
+    private static final ExecutorService EXECUTOR = Executors.newFixedThreadPool(2, r -> {
         Thread thread = new Thread(r, "ChatTranslate");
         thread.setDaemon(true);
         return thread;
@@ -197,13 +201,14 @@ public final class ChatTranslateModule {
                 error -> print(EnumChatFormatting.RED + "[Translate] 翻译失败: " + errorText(error)));
     }
 
-    /** 异常兜底文案：部分 IOException 没有 message，避免在聊天框打出 "null"。 */
+    /**
+     * 异常兜底文案：把底层网络异常转成玩家能看懂的中文提示
+     * （不再直接打 "java.net.SocketTimeoutException" 这类文案，玩家看不出发生了什么）。
+     */
     private static String errorText(Throwable error) {
         if (error == null) return "未知错误";
-        String message = error.getMessage();
-        return message == null || message.trim().isEmpty()
-                ? error.getClass().getSimpleName()
-                : message;
+        String hint = Translator.hint(error);
+        return hint == null || hint.trim().isEmpty() ? "未知错误" : hint;
     }
 
     /** 同步等待结果，仅建议在后台线程里调用；失败返回 null。 */
